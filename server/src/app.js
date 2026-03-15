@@ -10,9 +10,31 @@ import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 const app = express();
 const uploadsPath = path.resolve('uploads');
 
+const defaultAllowedOrigins = [
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+];
+
+const allowedOrigins = (env.CLIENT_URL || '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+const corsOrigins = allowedOrigins.length > 0 ? allowedOrigins : defaultAllowedOrigins;
+
 app.use(
   cors({
-    origin: env.CLIENT_URL,
+    origin: (origin, callback) => {
+      // Allow requests with no origin (for tools and same-machine checks).
+      if (!origin || corsOrigins.includes(origin)) {
+        callback(null, true);
+        return;
+      }
+
+      callback(new Error(`Not allowed by CORS: ${origin}`));
+    },
     credentials: true,
   })
 );
