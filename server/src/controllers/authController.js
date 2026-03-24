@@ -15,6 +15,30 @@ const buildToken = (user) =>
 
 const buildAvatar = (email) => `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(email)}`;
 
+const attachRoleProfileId = async (userLike) => {
+  if (!userLike) return userLike;
+
+  const user = typeof userLike.toJSON === 'function' ? userLike.toJSON() : { ...userLike };
+
+  if (user.role === 'teacher') {
+    const teacher = await Teacher.findOne({
+      where: { userId: user.id },
+      attributes: ['teacherId'],
+    });
+    user.teacherId = teacher?.teacherId || null;
+  }
+
+  if (user.role === 'student') {
+    const student = await Student.findOne({
+      where: { userId: user.id },
+      attributes: ['studentId'],
+    });
+    user.studentId = student?.studentId || null;
+  }
+
+  return user;
+};
+
 export const register = asyncHandler(async (req, res) => {
   const { name, email, password, role = 'student' } = req.body;
 
@@ -62,13 +86,14 @@ export const register = asyncHandler(async (req, res) => {
   });
 
   const savedUser = await User.findByPk(user.id);
+  const enrichedUser = await attachRoleProfileId(savedUser);
 
   sendSuccess(
     res,
     {
       message: 'Registration successful',
       token: buildToken(savedUser),
-      user: savedUser,
+      user: enrichedUser,
     },
     201
   );
@@ -88,14 +113,16 @@ export const login = asyncHandler(async (req, res) => {
   }
 
   const safeUser = await User.findByPk(user.id);
+  const enrichedUser = await attachRoleProfileId(safeUser);
 
   sendSuccess(res, {
     message: 'Login successful',
     token: buildToken(safeUser),
-    user: safeUser,
+    user: enrichedUser,
   });
 });
 
 export const getCurrentUser = asyncHandler(async (req, res) => {
-  sendSuccess(res, { user: req.user });
+  const enrichedUser = await attachRoleProfileId(req.user);
+  sendSuccess(res, { user: enrichedUser });
 });

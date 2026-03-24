@@ -15,6 +15,7 @@ const StudentProfile = () => {
   const [formData, setFormData] = useState({
     name: user?.name || 'John Doe',
     email: user?.email || 'john@example.com',
+    studentId: user?.studentId || 'Not assigned',
     phone: '+1 234 567 8900',
     address: '123 Campus Drive, University City',
     department: 'Computer Science',
@@ -72,6 +73,12 @@ const StudentProfile = () => {
             <Badge variant="primary" className="mb-4">{formData.department}</Badge>
             
             <div className="mt-6 space-y-3 text-left">
+              <div className="flex items-center gap-3 text-sm">
+                <User className="w-5 h-5 text-slate-400" />
+                <span className="text-slate-600 dark:text-slate-400">
+                  Student ID: {formData.studentId}
+                </span>
+              </div>
               <div className="flex items-center gap-3 text-sm">
                 <GraduationCap className="w-5 h-5 text-slate-400" />
                 <span className="text-slate-600 dark:text-slate-400">
@@ -145,6 +152,13 @@ const StudentProfile = () => {
                 onChange={handleChange}
                 disabled={!editing}
                 icon={<Mail className="w-5 h-5" />}
+              />
+              <Input
+                label="Student ID"
+                name="studentId"
+                value={formData.studentId}
+                disabled
+                icon={<User className="w-5 h-5" />}
               />
               <Input
                 label="Phone Number"

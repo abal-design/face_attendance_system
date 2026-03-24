@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   X,
@@ -11,14 +11,17 @@ import {
   Award,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
+import api from "@/utils/api";
 import Button from "../ui/Button";
 import Input from "../ui/Input";
 import { useToast } from "@/contexts/ToastContext";
 
 const ProfileModal = ({ isOpen, onClose }) => {
-  const { user } = useAuth();
+  const { user, updateUser } = useAuth();
   const toast = useToast();
   const [isEditMode, setIsEditMode] = useState(false);
+  const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
+  const avatarInputRef = useRef(null);
 
   // Lock body scroll
   useEffect(() => {
@@ -54,6 +57,50 @@ const ProfileModal = ({ isOpen, onClose }) => {
     setIsEditMode(false);
     toast.success("Profile updated successfully");
   };
+
+  const handleAvatarButtonClick = () => {
+    avatarInputRef.current?.click();
+  };
+
+  const handleAvatarChange = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    setIsUploadingAvatar(true);
+
+    try {
+      const formData = new FormData();
+      formData.append("image", file);
+
+      const response = await api.post("/settings/avatar", formData, {
+        headers: {
+          "Content-Type": "multipart/form-data",
+        },
+      });
+
+      if (response.data?.user) {
+        updateUser(response.data.user);
+      } else if (response.data?.avatar) {
+        updateUser({ avatar: response.data.avatar });
+      }
+
+      toast.success("Avatar updated successfully");
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Failed to upload avatar");
+    } finally {
+      setIsUploadingAvatar(false);
+      event.target.value = "";
+    }
+  };
+
+  const roleIdField =
+    user?.role === "teacher"
+      ? { label: "Teacher ID", value: user?.teacherId || "Not assigned" }
+      : user?.role === "student"
+      ? { label: "Student ID", value: user?.studentId || "Not assigned" }
+      : null;
 
   if (!isOpen) return null;
 
@@ -107,10 +154,26 @@ const ProfileModal = ({ isOpen, onClose }) => {
                     className="w-32 h-32 rounded-full border-4 border-primary-100 dark:border-primary-900 object-cover"
                   />
 
-                  <button className="absolute bottom-0 right-0 p-2 bg-primary-600 hover:bg-primary-700 text-white rounded-full shadow-lg transition">
+                  <input
+                    ref={avatarInputRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp,image/gif"
+                    className="hidden"
+                    onChange={handleAvatarChange}
+                  />
+
+                  <button
+                    onClick={handleAvatarButtonClick}
+                    disabled={isUploadingAvatar}
+                    className="absolute bottom-0 right-0 p-2 bg-primary-600 hover:bg-primary-700 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded-full shadow-lg transition"
+                  >
                     <Camera className="w-4 h-4" />
                   </button>
                 </div>
+
+                {isUploadingAvatar && (
+                  <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Uploading avatar...</p>
+                )}
 
                 <h3 className="mt-4 text-xl font-semibold text-slate-900 dark:text-slate-100">
                   {profile.name}
@@ -161,6 +224,15 @@ const ProfileModal = ({ isOpen, onClose }) => {
                       setProfile({ ...profile, email: e.target.value })
                     }
                   />
+
+                  {roleIdField && (
+                    <Input
+                      label={roleIdField.label}
+                      value={roleIdField.value}
+                      icon={<GraduationCap className="w-5 h-5" />}
+                      disabled
+                    />
+                  )}
 
                   <Input
                     label="Phone Number"

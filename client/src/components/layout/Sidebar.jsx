@@ -31,6 +31,7 @@ const Sidebar = ({ isOpen, setIsOpen }) => {
           { icon: Users, label: 'Students', path: '/admin/students' },
           { icon: GraduationCap, label: 'Teachers', path: '/admin/teachers' },
           { icon: Building2, label: 'Departments', path: '/admin/departments' },
+
           { icon: BarChart3, label: 'Analytics', path: '/admin/analytics' },
           { icon: Calendar, label: 'Attendance', path: '/admin/attendance' },
           { icon: FileText, label: 'Reports', path: '/admin/reports' },
@@ -40,6 +41,7 @@ const Sidebar = ({ isOpen, setIsOpen }) => {
           { icon: LayoutDashboard, label: 'Dashboard', path: '/teacher/dashboard' },
           { icon: Camera, label: 'Mark Attendance', path: '/teacher/attendance' },
           { icon: Users, label: 'My Students', path: '/teacher/students' },
+
           { icon: FileText, label: 'Reports', path: '/teacher/reports' },
           { icon: Calendar, label: 'Schedule', path: '/teacher/schedule' },
         ];
@@ -47,6 +49,7 @@ const Sidebar = ({ isOpen, setIsOpen }) => {
         return [
           { icon: LayoutDashboard, label: 'Dashboard', path: '/student/dashboard' },
           { icon: Calendar, label: 'My Attendance', path: '/student/attendance' },
+
           { icon: Clock, label: 'History', path: '/student/history' },
         ];
       default:
@@ -165,7 +168,7 @@ const Sidebar = ({ isOpen, setIsOpen }) => {
         {/* Toggle button */}
         <button
           onClick={() => setIsOpen(!isOpen)}
-          className="absolute -right-3 top-20 w-6 h-6 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-full flex items-center justify-center text-slate-600 dark:text-slate-400 hover:text-primary-600 dark:hover:text-primary-400 transition-colors shadow-lg hidden lg:flex"
+          className="absolute -right-3 top-20 w-6 h-6 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-full items-center justify-center text-slate-600 dark:text-slate-400 hover:text-primary-600 dark:hover:text-primary-400 transition-colors shadow-lg hidden lg:flex"
         >
           {isOpen ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
         </button>

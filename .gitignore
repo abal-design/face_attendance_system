@@ -1,0 +1,30 @@
+# Root dependencies
+node_modules/
+
+# Client artifacts
+client/node_modules/
+client/dist/
+
+# Server artifacts
+server/node_modules/
+server/uploads/avatars/*
+server/uploads/reports/*
+!server/uploads/avatars/.gitkeep
+!server/uploads/reports/.gitkeep
+
+# Environment files
+*.env
+server/.env
+client/.env
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# OS / editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

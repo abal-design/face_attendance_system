@@ -3,6 +3,7 @@ import { Outlet } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import Sidebar from './Sidebar';
 import Navbar from './Navbar';
+import FloatingChatWidget from './FloatingChatWidget';
 
 const DashboardLayout = () => {
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -23,6 +24,9 @@ const DashboardLayout = () => {
           <Outlet />
         </main>
       </motion.div>
+
+      {/* Floating AI Chat Widget */}
+      <FloatingChatWidget />
     </div>
   );
 };

@@ -10,6 +10,7 @@ import reportRoutes from './reports.js';
 import dashboardRoutes from './dashboard.js';
 import notificationRoutes from './notifications.js';
 import settingsRoutes from './settings.js';
+import chatRoutes from './chat.js';
 
 const router = Router();
 
@@ -24,5 +25,6 @@ router.use('/reports', reportRoutes);
 router.use('/dashboard', dashboardRoutes);
 router.use('/notifications', notificationRoutes);
 router.use('/settings', settingsRoutes);
+router.use('/chat', chatRoutes);
 
 export default router;

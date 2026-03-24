@@ -64,4 +64,28 @@
   .animation-delay-600 {
     animation-delay: 600ms;
   }
+
+  /* Waving hand animation for chat widget */
+  .animate-wave {
+    animation: wave 1.8s ease-in-out infinite;
+  }
+
+  /* Floating label animation for chat widget */
+  .animate-float {
+    animation: float 2.5s ease-in-out infinite;
+  }
+}
+
+@keyframes wave {
+  0%, 100% { transform: rotate(0deg); }
+  15% { transform: rotate(14deg); }
+  30% { transform: rotate(-8deg); }
+  45% { transform: rotate(14deg); }
+  60% { transform: rotate(-4deg); }
+  75% { transform: rotate(10deg); }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-4px); }
 }

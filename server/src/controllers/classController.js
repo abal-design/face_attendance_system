@@ -27,8 +27,54 @@ export const getClassById = asyncHandler(async (req, res) => {
 });
 
 export const createClass = asyncHandler(async (req, res) => {
-  const classItem = await ClassModel.create(req.body);
-  sendSuccess(res, { message: 'Class created successfully', class: classItem }, 201);
+  const { name, code, section, semester, academicYear, room, departmentId } = req.body;
+
+  if (!String(name || '').trim()) {
+    throw new ApiError(400, 'Class name is required');
+  }
+
+  if (!String(code || '').trim()) {
+    throw new ApiError(400, 'Class code is required');
+  }
+
+  let resolvedTeacherId = null;
+
+  if (req.user.role === 'teacher') {
+    const teacherProfile = await Teacher.findOne({ where: { userId: req.user.id } });
+    if (!teacherProfile) {
+      throw new ApiError(403, 'Teacher profile not found for current user');
+    }
+    resolvedTeacherId = teacherProfile.id;
+  } else if (req.body.teacherId) {
+    resolvedTeacherId = Number(req.body.teacherId);
+  }
+
+  if (departmentId) {
+    const department = await Department.findByPk(Number(departmentId));
+    if (!department) {
+      throw new ApiError(400, 'Selected department does not exist');
+    }
+  }
+
+  try {
+    const classItem = await ClassModel.create({
+      name: String(name).trim(),
+      code: String(code).trim().toUpperCase(),
+      section: section ? String(section).trim() : null,
+      semester: semester ? Number(semester) : null,
+      academicYear: academicYear ? String(academicYear).trim() : null,
+      room: room ? String(room).trim() : null,
+      departmentId: departmentId ? Number(departmentId) : null,
+      teacherId: resolvedTeacherId,
+    });
+
+    sendSuccess(res, { message: 'Class created successfully', class: classItem }, 201);
+  } catch (error) {
+    if (error.name === 'SequelizeUniqueConstraintError') {
+      throw new ApiError(409, 'Class code already exists');
+    }
+    throw error;
+  }
 });
 
 export const updateClass = asyncHandler(async (req, res) => {

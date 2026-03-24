@@ -6,8 +6,10 @@ import Button from '@/components/ui/Button';
 import Input from '@/components/ui/Input';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useToast } from '@/contexts/ToastContext';
+import { useAuth } from '@/contexts/AuthContext';
 
 const TeacherSettings = () => {
+  const { user } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const toast = useToast();
 
@@ -23,8 +25,9 @@ const TeacherSettings = () => {
   });
 
   const [profile, setProfile] = useState({
-    name: 'Dr. Michael Chen',
-    email: 'michael.chen@university.edu',
+    name: user?.name || 'Dr. Michael Chen',
+    email: user?.email || 'michael.chen@university.edu',
+    teacherId: user?.teacherId || 'Not assigned',
     phone: '+1 (555) 123-4567',
     department: 'Computer Science',
   });
@@ -98,6 +101,11 @@ const TeacherSettings = () => {
               type="email"
               value={profile.email}
               onChange={(e) => setProfile({ ...profile, email: e.target.value })}
+            />
+            <Input
+              label="Teacher ID"
+              value={profile.teacherId}
+              disabled
             />
             <Input
               label="Phone Number"

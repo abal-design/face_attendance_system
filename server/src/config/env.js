@@ -15,6 +15,10 @@ const env = {
   DB_LOGGING: (process.env.DB_LOGGING || 'false').toLowerCase() === 'true',
   JWT_SECRET: process.env.JWT_SECRET || 'change-this-secret',
   JWT_EXPIRES_IN: process.env.JWT_EXPIRES_IN || '7d',
+  OPENAI_API_KEY: process.env.OPENAI_API_KEY || '',
+  OPENAI_MODEL: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+  OPENAI_BASE_URL: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
+  AI_REQUEST_TIMEOUT_MS: Number(process.env.AI_REQUEST_TIMEOUT_MS || 15000),
 };
 
 export default env;

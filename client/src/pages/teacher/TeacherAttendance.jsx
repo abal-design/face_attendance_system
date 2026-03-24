@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Camera,
@@ -23,53 +24,219 @@ import Badge from '@/components/ui/Badge';
 import Input from '@/components/ui/Input';
 import Modal from '@/components/ui/Modal';
 import { useToast } from '@/contexts/ToastContext';
+import { useAuth } from '@/contexts/AuthContext';
 import api from '@/utils/api';
 import Progress from '@/components/ui/Progress';
 
+const parseTimeToMinutes = (time = '00:00:00') => {
+  const [hours = 0, minutes = 0] = String(time).split(':').map(Number);
+  return (hours * 60) + minutes;
+};
+
+const formatTimeShort = (time = '00:00:00') => String(time).slice(0, 5);
+
 const TeacherAttendance = () => {
+  const navigate = useNavigate();
+  const { user } = useAuth();
   const [cameraActive, setCameraActive] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [students, setStudents] = useState([]);
   const [detectedFaces, setDetectedFaces] = useState([]);
   const [classes, setClasses] = useState([]);
+  const [departments, setDepartments] = useState([]);
+  const [schedules, setSchedules] = useState([]);
+  const [currentDateTime, setCurrentDateTime] = useState(new Date());
+  const [hasAutoSelectedClass, setHasAutoSelectedClass] = useState(false);
   const videoRef = useRef(null);
   const toast = useToast();
 
   useEffect(() => {
-    api.get('/classes').then(res => {
-      const raw = res.data.classes || [];
-      setClasses(raw.map(c => ({
-        id: c.id,
-        name: `${c.name} - ${c.code}`,
-        section: c.section || '',
-        semester: c.academicYear || '',
-        students: 0,
-      })));
-    }).catch(() => {});
+    let isMounted = true;
+
+    const loadActivationData = async () => {
+      const [classesResult, schedulesResult, departmentsResult] = await Promise.allSettled([
+        api.get('/classes'),
+        api.get('/schedule'),
+        api.get('/departments'),
+      ]);
+
+      if (!isMounted) return;
+
+      if (classesResult.status === 'fulfilled') {
+        const raw = classesResult.value.data.classes || [];
+        setClasses(
+          raw.map((c) => ({
+            id: c.id,
+            name: `${c.name} - ${c.code}`,
+            section: c.section || '',
+            semester: c.academicYear || '',
+            departmentId: c.department?.id || null,
+            students: 0,
+          }))
+        );
+      } else {
+        toast.error('Failed to load class list');
+      }
+
+      if (schedulesResult.status === 'fulfilled') {
+        setSchedules(schedulesResult.value.data.schedules || []);
+      }
+
+      if (departmentsResult.status === 'fulfilled') {
+        setDepartments(departmentsResult.value.data.departments || []);
+      }
+    };
+
+    loadActivationData();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [toast]);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentDateTime(new Date());
+    }, 1000);
+
+    return () => clearInterval(timer);
   }, []);
 
   // Authentication state
   const [attendanceActive, setAttendanceActive] = useState(false);
+  const [attendanceMode, setAttendanceMode] = useState(null);
+  const [selectedSection, setSelectedSection] = useState('');
   const [selectedClass, setSelectedClass] = useState(null);
+  const [attendanceDate, setAttendanceDate] = useState(new Date().toISOString().slice(0, 10));
   const [teacherId, setTeacherId] = useState('');
   const [showActivationModal, setShowActivationModal] = useState(true);
   const [isVerifying, setIsVerifying] = useState(false);
+  const [isSavingAttendance, setIsSavingAttendance] = useState(false);
+  const [isLoadingStudents, setIsLoadingStudents] = useState(false);
+  const [showCreateClassModal, setShowCreateClassModal] = useState(false);
+  const [isCreatingClass, setIsCreatingClass] = useState(false);
+  const [newClassForm, setNewClassForm] = useState({
+    name: '',
+    code: '',
+    section: '',
+    semester: '',
+    academicYear: '',
+    room: '',
+    departmentId: '',
+  });
   
   // File import state
   const [showImportModal, setShowImportModal] = useState(false);
   const [importedStudents, setImportedStudents] = useState([]);
   const fileInputRef = useRef(null);
 
+  const currentDayName = currentDateTime.toLocaleDateString('en-US', { weekday: 'long' });
+  const currentTimeInMinutes = (currentDateTime.getHours() * 60) + currentDateTime.getMinutes();
+  const activeScheduleEntries = schedules.filter((entry) => (
+    entry.dayOfWeek === currentDayName &&
+    parseTimeToMinutes(entry.startTime) <= currentTimeInMinutes &&
+    currentTimeInMinutes < parseTimeToMinutes(entry.endTime)
+  ));
+  const activeClassIds = new Set(activeScheduleEntries.map((entry) => Number(entry.classId)));
+  const suggestedClass = classes.find((classItem) => activeClassIds.has(Number(classItem.id))) || null;
+  const sectionOptions = Array.from(new Set(classes.map((classItem) => classItem.section).filter(Boolean)));
+  const filteredClasses = attendanceMode === 'manual' && selectedSection
+    ? classes.filter((classItem) => classItem.section === selectedSection)
+    : classes;
+
+  useEffect(() => {
+    if (selectedClass || !suggestedClass || hasAutoSelectedClass) return;
+
+    setSelectedClass(suggestedClass);
+    setHasAutoSelectedClass(true);
+    toast.info(`${suggestedClass.name} was auto-selected based on current time.`);
+  }, [selectedClass, suggestedClass, hasAutoSelectedClass, toast]);
+
+  useEffect(() => {
+    if (attendanceMode !== 'manual') return;
+    if (!selectedSection && sectionOptions.length > 0) {
+      setSelectedSection(sectionOptions[0]);
+    }
+  }, [attendanceMode, selectedSection, sectionOptions]);
+
+  useEffect(() => {
+    if (attendanceMode !== 'manual' || !selectedSection) return;
+    if (selectedClass && selectedClass.section === selectedSection) return;
+
+    const firstClassInSection = classes.find((classItem) => classItem.section === selectedSection) || null;
+    setSelectedClass(firstClassInSection);
+  }, [attendanceMode, selectedSection, classes, selectedClass]);
+
+  useEffect(() => {
+    if (!teacherId && user?.teacherId) {
+      setTeacherId(user.teacherId);
+    }
+  }, [teacherId, user]);
+
   const presentCount = students.filter(s => s.status === 'present').length;
   const absentCount = students.filter(s => s.status === 'absent').length;
   const pendingCount = students.filter(s => s.status === 'pending').length;
 
+  const loadStudentsForAttendance = async (classItem = selectedClass, date = attendanceDate) => {
+    if (!classItem?.id) return;
+
+    try {
+      setIsLoadingStudents(true);
+
+      const [studentsRes, attendanceRes] = await Promise.all([
+        api.get('/students'),
+        api.get('/attendance', {
+          params: {
+            classId: classItem.id,
+            date,
+          },
+        }),
+      ]);
+
+      const rawStudents = studentsRes.data.students || [];
+      const existingAttendance = attendanceRes.data.attendance || [];
+      const existingByStudentId = new Map(
+        existingAttendance.map((record) => [Number(record.studentId), record.status])
+      );
+
+      const filteredStudents = classItem.departmentId
+        ? rawStudents.filter((student) => Number(student.department?.id) === Number(classItem.departmentId))
+        : rawStudents;
+
+      setStudents(
+        filteredStudents.map((student) => ({
+          id: student.id,
+          name: student.user?.name || student.studentId,
+          email: student.user?.email || '',
+          status: existingByStudentId.get(Number(student.id)) || 'pending',
+          avatar:
+            student.user?.avatar ||
+            `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(student.studentId || String(student.id))}`,
+        }))
+      );
+    } catch (error) {
+      toast.error('Unable to load students for attendance');
+    } finally {
+      setIsLoadingStudents(false);
+    }
+  };
+
   const handleActivateAttendance = () => {
+    const resolvedTeacherId = teacherId.trim() || user?.teacherId || '';
+
+    if (!attendanceMode) {
+      toast.error('Please choose attendance mode: Manual or Face Recognition');
+      return;
+    }
+    if (attendanceMode === 'manual' && !selectedSection) {
+      toast.error('Please select a section');
+      return;
+    }
     if (!selectedClass) {
       toast.error('Please select a class');
       return;
     }
-    if (!teacherId.trim()) {
+    if (!resolvedTeacherId) {
       toast.error('Please enter your Teacher ID');
       return;
     }
@@ -78,14 +245,11 @@ const TeacherAttendance = () => {
     
     // Simulate API call to verify teacher ID
     setTimeout(() => {
-      // Mock verification - in real app, verify against backend
-      if (teacherId.length >= 3) {
-        setAttendanceActive(true);
-        setShowActivationModal(false);
-        toast.success(`Attendance activated for ${selectedClass.name}`);
-      } else {
-        toast.error('Invalid Teacher ID');
-      }
+      // Mock verification (accept any non-empty ID until backend validation is wired)
+      setAttendanceActive(true);
+      setShowActivationModal(false);
+      loadStudentsForAttendance(selectedClass, attendanceDate);
+      toast.success(`Attendance activated for ${selectedClass.name}`);
       setIsVerifying(false);
     }, 1000);
   };
@@ -180,6 +344,70 @@ const TeacherAttendance = () => {
     toast.success('Sample CSV downloaded');
   };
 
+  const resetCreateClassForm = () => {
+    setNewClassForm({
+      name: '',
+      code: '',
+      section: selectedSection || '',
+      semester: '',
+      academicYear: '',
+      room: '',
+      departmentId: '',
+    });
+  };
+
+  const openCreateClassModal = () => {
+    resetCreateClassForm();
+    setShowCreateClassModal(true);
+  };
+
+  const handleCreateClass = async () => {
+    if (!newClassForm.name.trim() || !newClassForm.code.trim()) {
+      toast.error('Class name and class code are required');
+      return;
+    }
+
+    setIsCreatingClass(true);
+
+    try {
+      const payload = {
+        name: newClassForm.name.trim(),
+        code: newClassForm.code.trim().toUpperCase(),
+        section: newClassForm.section.trim() || null,
+        semester: newClassForm.semester ? Number(newClassForm.semester) : null,
+        academicYear: newClassForm.academicYear.trim() || null,
+        room: newClassForm.room.trim() || null,
+        departmentId: newClassForm.departmentId ? Number(newClassForm.departmentId) : null,
+      };
+
+      const response = await api.post('/classes', payload);
+      const createdClass = response.data.class;
+      const mappedClass = {
+        id: createdClass.id,
+        name: `${createdClass.name} - ${createdClass.code}`,
+        section: createdClass.section || '',
+        semester: createdClass.academicYear || '',
+        departmentId: createdClass.departmentId || null,
+        students: 0,
+      };
+
+      setClasses((prev) => [mappedClass, ...prev]);
+      setSelectedClass(mappedClass);
+
+      if (mappedClass.section) {
+        setSelectedSection(mappedClass.section);
+      }
+
+      setShowCreateClassModal(false);
+      toast.success('Class created successfully');
+    } catch (error) {
+      const message = error.response?.data?.message || 'Failed to create class';
+      toast.error(message);
+    } finally {
+      setIsCreatingClass(false);
+    }
+  };
+
   const startCamera = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -253,13 +481,43 @@ const TeacherAttendance = () => {
     toast.success(`${student.name} marked ${status}`);
   };
 
-  const completeAttendance = () => {
-    // Mark all remaining pending as absent
-    setStudents(prev =>
-      prev.map(s => s.status === 'pending' ? { ...s, status: 'absent' } : s)
+  const completeAttendance = async () => {
+    if (!selectedClass?.id) {
+      toast.error('No class selected');
+      return;
+    }
+
+    const finalizedStudents = students.map((student) =>
+      student.status === 'pending' ? { ...student, status: 'absent' } : student
     );
-    stopCamera();
-    toast.success('Attendance completed and saved');
+
+    if (finalizedStudents.length === 0) {
+      toast.error('No students available to save attendance');
+      return;
+    }
+
+    setStudents(finalizedStudents);
+    setIsSavingAttendance(true);
+
+    try {
+      await Promise.all(
+        finalizedStudents.map((student) =>
+          api.post('/attendance', {
+            studentId: student.id,
+            classId: selectedClass.id,
+            attendanceDate,
+            status: student.status,
+          })
+        )
+      );
+
+      stopCamera();
+      toast.success('Attendance completed and saved');
+    } catch (error) {
+      toast.error('Failed to save attendance records');
+    } finally {
+      setIsSavingAttendance(false);
+    }
   };
 
   useEffect(() => {
@@ -273,10 +531,11 @@ const TeacherAttendance = () => {
       {/* Activation Modal */}
       <Modal
         isOpen={showActivationModal && !attendanceActive}
-        onClose={() => {}}
+        onClose={() => navigate('/teacher/dashboard')}
         title="Activate Attendance Session"
       >
-        <div className="space-y-6">
+        {/* height is set to auto to fit content, so we can have a nice scroll if needed on smaller screens without cutting off content on larger screens */}
+        <div className="space-y-6 px-4 sm:px-6 pb-6">
           <div className="flex items-center justify-center">
             <div className="p-4 bg-gradient-to-br from-primary-500 to-primary-600 rounded-full text-white shadow-lg">
               <Lock className="w-12 h-12" />
@@ -288,14 +547,129 @@ const TeacherAttendance = () => {
               Select your class and enter your Teacher ID to activate attendance marking
             </p>
 
-            {/* Class Selection */}
+            <div className="mb-5">
+              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+                Attendance Mode
+              </label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <motion.button
+                  whileHover={{ scale: 1.01 }}
+                  whileTap={{ scale: 0.99 }}
+                  onClick={() => setAttendanceMode('manual')}
+                  className={`w-full p-3 rounded-lg border-2 transition-all text-left ${
+                    attendanceMode === 'manual'
+                      ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20'
+                      : 'border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600'
+                  }`}
+                >
+                  <p className="font-semibold text-slate-900 dark:text-slate-100">Manual Attendance</p>
+                  <p className="text-xs text-slate-600 dark:text-slate-400 mt-1">
+                    Mark students as Present or Absent yourself.
+                  </p>
+                </motion.button>
+
+                <motion.button
+                  whileHover={{ scale: 1.01 }}
+                  whileTap={{ scale: 0.99 }}
+                  onClick={() => setAttendanceMode('face')}
+                  className={`w-full p-3 rounded-lg border-2 transition-all text-left ${
+                    attendanceMode === 'face'
+                      ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20'
+                      : 'border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600'
+                  }`}
+                >
+                  <p className="font-semibold text-slate-900 dark:text-slate-100">Face Recognition</p>
+                  <p className="text-xs text-slate-600 dark:text-slate-400 mt-1">
+                    Use camera and AI detection for automatic marking.
+                  </p>
+                </motion.button>
+              </div>
+            </div>
+
+            <div className="mb-5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40 p-3">
+              <p className="text-sm font-medium text-slate-700 dark:text-slate-200">
+                {currentDateTime.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'short', day: 'numeric' })}
+                {' • '}
+                {currentDateTime.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+              </p>
+              {suggestedClass ? (
+                <p className="text-xs mt-1 text-success-700 dark:text-success-300">
+                  Suggested class is active now: {suggestedClass.name}
+                </p>
+              ) : (
+                <p className="text-xs mt-1 text-slate-500 dark:text-slate-400">
+                  No active class at this time. You can still select a class manually.
+                </p>
+              )}
+            </div>
+
+            {/* Section + Class Selection */}
             <div className="space-y-4">
+              {attendanceMode === 'manual' && (
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+                    Select Section
+                  </label>
+                  <select
+                    value={selectedSection}
+                    onChange={(e) => {
+                      setSelectedSection(e.target.value);
+                      setSelectedClass(null);
+                    }}
+                    className="w-full px-4 py-2.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  >
+                    <option value="">Choose Section</option>
+                    {sectionOptions.map((section) => (
+                      <option key={section} value={section}>{section}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+                  Attendance Date
+                </label>
+                <Input
+                  type="date"
+                  value={attendanceDate}
+                  onChange={(e) => setAttendanceDate(e.target.value)}
+                  disabled={isVerifying}
+                />
+              </div>
+
               <div>
                 <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
                   Select Class
                 </label>
+                <div className="mb-2 flex justify-end">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={openCreateClassModal}
+                  >
+                    Create Class
+                  </Button>
+                </div>
                 <div className="space-y-2 max-h-64 overflow-y-auto">
-                  {classes.map((classItem) => (
+                  {classes.length === 0 && (
+                    <div className="p-4 rounded-lg border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-900/20">
+                      <p className="text-sm text-amber-800 dark:text-amber-300">
+                        No classes available right now. Please create a class first, then try again.
+                      </p>
+                    </div>
+                  )}
+                  {attendanceMode === 'manual' && selectedSection && filteredClasses.length === 0 && (
+                    <div className="p-4 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40">
+                      <p className="text-sm text-slate-600 dark:text-slate-300">
+                        No class found in section {selectedSection}.
+                      </p>
+                    </div>
+                  )}
+                  {filteredClasses.map((classItem) => (
+                    (() => {
+                      const activeEntry = activeScheduleEntries.find((entry) => Number(entry.classId) === Number(classItem.id));
+                      return (
                     <motion.button
                       key={classItem.id}
                       whileHover={{ scale: 1.02 }}
@@ -320,12 +694,17 @@ const TeacherAttendance = () => {
                             </p>
                             <p className="text-sm text-slate-600 dark:text-slate-400">
                               Section {classItem.section} • {classItem.semester}
+                              {activeEntry ? ` • ${formatTimeShort(activeEntry.startTime)}-${formatTimeShort(activeEntry.endTime)}` : ''}
                             </p>
                           </div>
                         </div>
-                        <Badge variant="secondary">{classItem.students} students</Badge>
+                        <Badge variant={activeEntry ? 'success' : 'default'}>
+                          {activeEntry ? 'Active now' : `${classItem.students} students`}
+                        </Badge>
                       </div>
                     </motion.button>
+                      );
+                    })()
                   ))}
                 </div>
               </div>
@@ -341,8 +720,13 @@ const TeacherAttendance = () => {
                   value={teacherId}
                   onChange={(e) => setTeacherId(e.target.value)}
                   icon={<Lock className="w-5 h-5" />}
-                  disabled={isVerifying}
+                  disabled={isVerifying || Boolean(user?.teacherId)}
                 />
+                {user?.teacherId && (
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                    Using your account Teacher ID: {user.teacherId}
+                  </p>
+                )}
               </div>
             </div>
           </div>
@@ -353,7 +737,7 @@ const TeacherAttendance = () => {
               variant="primary"
               className="flex-1"
               onClick={handleActivateAttendance}
-              disabled={!selectedClass || !teacherId || isVerifying}
+              disabled={isVerifying}
             >
               {isVerifying ? 'Verifying...' : 'Activate Attendance'}
             </Button>
@@ -396,9 +780,34 @@ const TeacherAttendance = () => {
               </Badge>
             </div>
             <p className="text-slate-600 dark:text-slate-400">
-              Use AI-powered face recognition to mark attendance automatically
+              {attendanceMode === 'face'
+                ? 'Use AI-powered face recognition to mark attendance automatically'
+                : `Manual attendance mode is active for ${attendanceDate}. Mark each student as present or absent.`}
             </p>
           </motion.div>
+
+      {attendanceMode === 'manual' && (
+        <Card>
+          <CardBody className="flex flex-col md:flex-row md:items-end gap-4">
+            <div className="w-full md:w-64">
+              <Input
+                label="Filter Date"
+                type="date"
+                value={attendanceDate}
+                onChange={(e) => setAttendanceDate(e.target.value)}
+              />
+            </div>
+            <Button
+              variant="outline"
+              onClick={() => loadStudentsForAttendance(selectedClass, attendanceDate)}
+              loading={isLoadingStudents}
+              disabled={isLoadingStudents || !selectedClass}
+            >
+              Load Attendance For Date
+            </Button>
+          </CardBody>
+        </Card>
+      )}
 
       {/* Stats */}
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
@@ -453,7 +862,7 @@ const TeacherAttendance = () => {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Camera section */}
+        {attendanceMode === 'face' && (
         <Card className="lg:col-span-2">
           <CardHeader>
             <div className="flex items-center justify-between">
@@ -603,9 +1012,10 @@ const TeacherAttendance = () => {
             )}
           </CardBody>
         </Card>
+        )}
 
         {/* Student list */}
-        <Card>
+        <Card className={attendanceMode === 'face' ? '' : 'lg:col-span-3'}>
           <CardHeader>
             <div className="flex items-center justify-between">
               <div>
@@ -613,7 +1023,9 @@ const TeacherAttendance = () => {
                   Students
                 </h2>
                 <p className="text-sm text-slate-600 dark:text-slate-400">
-                  {pendingCount} pending
+                  {isLoadingStudents
+                    ? 'Loading students...'
+                    : `${pendingCount} pending${attendanceMode === 'manual' ? ` • Manual mode • ${attendanceDate}` : ''}`}
                 </p>
               </div>
               <Button
@@ -698,6 +1110,8 @@ const TeacherAttendance = () => {
             onClick={completeAttendance}
             variant="primary"
             size="lg"
+            loading={isSavingAttendance}
+            disabled={isSavingAttendance}
             icon={<CheckCircle2 className="w-5 h-5" />}
           >
             Complete & Save Attendance
@@ -794,6 +1208,105 @@ const TeacherAttendance = () => {
               icon={<CheckCircle2 className="w-5 h-5" />}
             >
               Add Students
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={showCreateClassModal}
+        onClose={() => !isCreatingClass && setShowCreateClassModal(false)}
+        title="Create New Class"
+      >
+        <div className="space-y-4">
+          <Input
+            label="Class Name"
+            placeholder="e.g. Computer Science"
+            value={newClassForm.name}
+            onChange={(e) => setNewClassForm((prev) => ({ ...prev, name: e.target.value }))}
+            disabled={isCreatingClass}
+          />
+
+          <Input
+            label="Class Code"
+            placeholder="e.g. CS101"
+            value={newClassForm.code}
+            onChange={(e) => setNewClassForm((prev) => ({ ...prev, code: e.target.value.toUpperCase() }))}
+            disabled={isCreatingClass}
+          />
+
+          <Input
+            label="Section"
+            placeholder="e.g. A"
+            value={newClassForm.section}
+            onChange={(e) => setNewClassForm((prev) => ({ ...prev, section: e.target.value }))}
+            disabled={isCreatingClass}
+          />
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Input
+              label="Semester"
+              type="number"
+              min="1"
+              max="12"
+              placeholder="e.g. 1"
+              value={newClassForm.semester}
+              onChange={(e) => setNewClassForm((prev) => ({ ...prev, semester: e.target.value }))}
+              disabled={isCreatingClass}
+            />
+            <Input
+              label="Academic Year"
+              placeholder="e.g. 2025-2026"
+              value={newClassForm.academicYear}
+              onChange={(e) => setNewClassForm((prev) => ({ ...prev, academicYear: e.target.value }))}
+              disabled={isCreatingClass}
+            />
+          </div>
+
+          <Input
+            label="Room"
+            placeholder="e.g. B-204"
+            value={newClassForm.room}
+            onChange={(e) => setNewClassForm((prev) => ({ ...prev, room: e.target.value }))}
+            disabled={isCreatingClass}
+          />
+
+          <div>
+            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+              Department
+            </label>
+            <select
+              value={newClassForm.departmentId}
+              onChange={(e) => setNewClassForm((prev) => ({ ...prev, departmentId: e.target.value }))}
+              className="w-full px-4 py-2.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+              disabled={isCreatingClass}
+            >
+              <option value="">No Department</option>
+              {departments.map((department) => (
+                <option key={department.id} value={department.id}>
+                  {department.name} ({department.code})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex gap-3">
+            <Button
+              variant="secondary"
+              className="flex-1"
+              onClick={() => setShowCreateClassModal(false)}
+              disabled={isCreatingClass}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              className="flex-1"
+              onClick={handleCreateClass}
+              loading={isCreatingClass}
+              disabled={isCreatingClass}
+            >
+              Create Class
             </Button>
           </div>
         </div>

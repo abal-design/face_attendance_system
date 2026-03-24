@@ -1,5 +1,5 @@
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
-import { AuthProvider } from './contexts/AuthContext';
+import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { ThemeProvider } from './contexts/ThemeContext';
 import { ToastProvider } from './contexts/ToastContext';
 import { NotificationProvider } from './contexts/NotificationContext';
@@ -17,6 +17,7 @@ import StudentHistory from './pages/student/StudentHistory';
 import StudentProfile from './pages/student/StudentProfile';
 import StudentSettings from './pages/student/StudentSettings';
 
+
 // Teacher pages
 import TeacherDashboard from './pages/teacher/TeacherDashboard';
 import TeacherAttendance from './pages/teacher/TeacherAttendance';
@@ -31,6 +32,13 @@ import AdminStudents from './pages/admin/AdminStudents';
 import AdminTeachers from './pages/admin/AdminTeachers';
 import AdminDepartments from './pages/admin/AdminDepartments';
 import AdminSettings from './pages/admin/AdminSettings';
+
+const RoleHomeRedirect = () => {
+  const { user } = useAuth();
+  const role = user?.role || 'student';
+
+  return <Navigate to={`/${role}/dashboard`} replace />;
+};
 
 function App() {
   return (
@@ -95,6 +103,7 @@ function App() {
                     }
                   />
 
+
                   {/* Teacher routes */}
                   <Route
                     path="teacher/dashboard"
@@ -144,6 +153,7 @@ function App() {
                       </ProtectedRoute>
                     }
                   />
+
 
                   {/* Admin routes */}
                   <Route
@@ -232,8 +242,9 @@ function App() {
                     }
                   />
 
+
                   {/* Default redirect */}
-                  <Route path="/" element={<Navigate to="/login" replace />} />
+                  <Route index element={<RoleHomeRedirect />} />
                 </Route>
 
                 {/* 404 */}

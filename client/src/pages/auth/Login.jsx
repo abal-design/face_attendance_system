@@ -37,13 +37,13 @@ const Login = () => {
   };
 
   const quickLogin = (role) => {
-    const emails = {
-      admin: 'admin@faceattend.com',
-      teacher: 'teacher@faceattend.com',
-      student: 'student@faceattend.com',
+    const credentials = {
+      admin:   { email: 'admin1@school.com',   password: 'Admin@123' },
+      teacher: { email: 'teacher1@school.com', password: 'Teacher@123' },
+      student: { email: 'student1@school.com', password: 'Student@123' },
     };
-    setEmail(emails[role]);
-    setPassword('password123');
+    setEmail(credentials[role].email);
+    setPassword(credentials[role].password);
   };
 
   const roleIcons = {
