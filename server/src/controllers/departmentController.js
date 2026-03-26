@@ -6,10 +6,44 @@ import { sendSuccess } from '../utils/response.js';
 const departmentIncludes = [{ model: Teacher, as: 'head', attributes: ['id', 'teacherId'] }];
 
 export const listDepartments = asyncHandler(async (req, res) => {
-  const departments = await Department.findAll({
+  let departments = await Department.findAll({
     include: departmentIncludes,
     order: [['name', 'ASC']],
   });
+
+  const requiredDepartments = [
+    {
+      name: 'Information Technology',
+      code: 'IT',
+      description: 'Department of Information Technology',
+      status: 'active',
+    },
+    {
+      name: 'Business Administration',
+      code: 'BBA',
+      description: 'Department of Business Administration',
+      status: 'active',
+    },
+  ];
+
+  const existingCodes = new Set(
+    departments
+      .map((department) => String(department.code || '').toUpperCase())
+      .filter(Boolean)
+  );
+
+  const missingDepartments = requiredDepartments.filter(
+    (department) => !existingCodes.has(department.code)
+  );
+
+  if (missingDepartments.length > 0) {
+    await Department.bulkCreate(missingDepartments, { ignoreDuplicates: true });
+
+    departments = await Department.findAll({
+      include: departmentIncludes,
+      order: [['name', 'ASC']],
+    });
+  }
 
   sendSuccess(res, { departments });
 });

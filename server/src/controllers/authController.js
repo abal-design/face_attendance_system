@@ -6,6 +6,8 @@ import { Student, Teacher, User } from '../models/index.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { generateEntityId } from '../utils/generateId.js';
+import { normalizeInstitutionEmail } from '../utils/institutionEmail.js';
+import { canSendCredentialEmail, sendCredentialEmail } from '../utils/credentialEmail.js';
 import { sendSuccess } from '../utils/response.js';
 
 const buildToken = (user) =>
@@ -41,8 +43,10 @@ const attachRoleProfileId = async (userLike) => {
 
 export const register = asyncHandler(async (req, res) => {
   const { name, email, password, role = 'student' } = req.body;
+  const shouldUseInstitutionFormat = role === 'student' || role === 'teacher';
+  const normalizedEmail = shouldUseInstitutionFormat ? normalizeInstitutionEmail(email) : email;
 
-  const existingUser = await User.scope('withPassword').findOne({ where: { email } });
+  const existingUser = await User.scope('withPassword').findOne({ where: { email: normalizedEmail } });
   if (existingUser) {
     throw new ApiError(409, 'An account with this email already exists');
   }
@@ -55,10 +59,10 @@ export const register = asyncHandler(async (req, res) => {
     user = await User.scope('withPassword').create(
       {
         name,
-        email,
+        email: normalizedEmail,
         password: hashedPassword,
         role,
-        avatar: buildAvatar(email),
+        avatar: buildAvatar(normalizedEmail),
       },
       { transaction }
     );
@@ -88,12 +92,36 @@ export const register = asyncHandler(async (req, res) => {
   const savedUser = await User.findByPk(user.id);
   const enrichedUser = await attachRoleProfileId(savedUser);
 
+  let emailDelivery = {
+    attempted: false,
+    sent: false,
+    error: null,
+  };
+
+  if (canSendCredentialEmail()) {
+    emailDelivery.attempted = true;
+    try {
+      const roleId = role === 'student' ? enrichedUser.studentId : role === 'teacher' ? enrichedUser.teacherId : `ADM-${savedUser.id}`;
+      await sendCredentialEmail({
+        toEmail: savedUser.email,
+        userName: savedUser.name,
+        userId: roleId,
+        password,
+        role,
+      });
+      emailDelivery.sent = true;
+    } catch (error) {
+      emailDelivery.error = error.message || 'Failed to send credential email';
+    }
+  }
+
   sendSuccess(
     res,
     {
       message: 'Registration successful',
       token: buildToken(savedUser),
       user: enrichedUser,
+      emailDelivery,
     },
     201
   );

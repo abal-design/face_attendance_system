@@ -1,4 +1,4 @@
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate, Link } from 'react-router-dom';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { ThemeProvider } from './contexts/ThemeContext';
 import { ToastProvider } from './contexts/ToastContext';
@@ -29,8 +29,10 @@ import TeacherSettings from './pages/teacher/TeacherSettings';
 // Admin pages
 import AdminDashboard from './pages/admin/AdminDashboard';
 import AdminStudents from './pages/admin/AdminStudents';
+import AdminStudentSections from './pages/admin/AdminStudentSections';
 import AdminTeachers from './pages/admin/AdminTeachers';
 import AdminDepartments from './pages/admin/AdminDepartments';
+import AdminReports from './pages/admin/AdminReports';
 import AdminSettings from './pages/admin/AdminSettings';
 
 const RoleHomeRedirect = () => {
@@ -46,7 +48,7 @@ function App() {
       <AuthProvider>
         <ToastProvider>
           <NotificationProvider>
-            <Router>
+            <Router future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
               <Routes>
                 {/* Public routes */}
                 <Route path="/login" element={<Login />} />
@@ -173,6 +175,14 @@ function App() {
                     }
                   />
                   <Route
+                    path="admin/student-sections"
+                    element={
+                      <ProtectedRoute allowedRoles={['admin']}>
+                        <AdminStudentSections />
+                      </ProtectedRoute>
+                    }
+                  />
+                  <Route
                     path="admin/teachers"
                     element={
                       <ProtectedRoute allowedRoles={['admin']}>
@@ -189,47 +199,10 @@ function App() {
                     }
                   />
                   <Route
-                    path="admin/analytics"
-                    element={
-                      <ProtectedRoute allowedRoles={['admin']}>
-                        <div className="text-center py-20">
-                          <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100 mb-2">
-                            Analytics
-                          </h2>
-                          <p className="text-slate-600 dark:text-slate-400">
-                            Detailed analytics will be displayed here
-                          </p>
-                        </div>
-                      </ProtectedRoute>
-                    }
-                  />
-                  <Route
-                    path="admin/attendance"
-                    element={
-                      <ProtectedRoute allowedRoles={['admin']}>
-                        <div className="text-center py-20">
-                          <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100 mb-2">
-                            Attendance Records
-                          </h2>
-                          <p className="text-slate-600 dark:text-slate-400">
-                            System-wide attendance records will be displayed here
-                          </p>
-                        </div>
-                      </ProtectedRoute>
-                    }
-                  />
-                  <Route
                     path="admin/reports"
                     element={
                       <ProtectedRoute allowedRoles={['admin']}>
-                        <div className="text-center py-20">
-                          <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100 mb-2">
-                            Reports
-                          </h2>
-                          <p className="text-slate-600 dark:text-slate-400">
-                            System reports will be displayed here
-                          </p>
-                        </div>
+                        <AdminReports />
                       </ProtectedRoute>
                     }
                   />
@@ -248,27 +221,43 @@ function App() {
                 </Route>
 
                 {/* 404 */}
+                
+
                 <Route
                   path="*"
                   element={
-                    <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-900">
-                      <div className="text-center">
-                        <h1 className="text-6xl font-bold text-slate-900 dark:text-slate-100 mb-4">
+                    <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-900 px-4">
+                      <div className="text-center max-w-md">
+                        
+                        {/* Big 404 */}
+                        <h1 className="text-8xl font-extrabold text-primary-600 mb-4">
                           404
                         </h1>
-                        <p className="text-xl text-slate-600 dark:text-slate-400 mb-8">
-                          Page not found
+                  
+                        {/* Message */}
+                        <h2 className="text-2xl font-semibold text-slate-800 dark:text-slate-200 mb-2">
+                          Oops! Page not found
+                        </h2>
+                  
+                        <p className="text-slate-600 dark:text-slate-400 mb-8">
+                          The page you’re looking for doesn’t exist or has been moved.
                         </p>
-                        <a
-                          href="/login"
-                          className="px-6 py-3 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors"
+                  
+                        {/* Button */}
+                        <Link
+                          to="/"
+                          className="inline-block px-6 py-3 bg-primary-600 text-white font-medium rounded-lg shadow hover:bg-primary-700 transition-all duration-200"
                         >
-                          Go to Login
-                        </a>
+                          Go to Home
+                        </Link>
+                  
                       </div>
                     </div>
                   }
                 />
+
+
+
               </Routes>
             </Router>
           </NotificationProvider>

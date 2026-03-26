@@ -4,6 +4,7 @@ import { Department, Teacher, User } from '../models/index.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { generateEntityId } from '../utils/generateId.js';
+import { normalizeInstitutionEmail } from '../utils/institutionEmail.js';
 import { sendSuccess } from '../utils/response.js';
 
 const teacherIncludes = [
@@ -31,8 +32,9 @@ export const getTeacherById = asyncHandler(async (req, res) => {
 
 export const createTeacher = asyncHandler(async (req, res) => {
   const { name, email, password, departmentId, subject, experience, qualification, phone } = req.body;
+  const normalizedEmail = normalizeInstitutionEmail(email);
 
-  const existingUser = await User.scope('withPassword').findOne({ where: { email } });
+  const existingUser = await User.scope('withPassword').findOne({ where: { email: normalizedEmail } });
   if (existingUser) {
     throw new ApiError(409, 'An account with this email already exists');
   }
@@ -43,10 +45,10 @@ export const createTeacher = asyncHandler(async (req, res) => {
     const user = await User.scope('withPassword').create(
       {
         name,
-        email,
+        email: normalizedEmail,
         password: await bcrypt.hash(password || 'ChangeMe123!', 10),
         role: 'teacher',
-        avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(email)}`,
+        avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(normalizedEmail)}`,
       },
       { transaction }
     );
@@ -76,11 +78,12 @@ export const updateTeacher = asyncHandler(async (req, res) => {
   }
 
   const { name, email, avatar, isActive, departmentId, subject, experience, qualification, phone, status } = req.body;
+  const normalizedEmail = email ? normalizeInstitutionEmail(email) : teacher.user?.email;
 
   if (teacher.user) {
     await teacher.user.update({
       name: name ?? teacher.user.name,
-      email: email ?? teacher.user.email,
+      email: normalizedEmail ?? teacher.user.email,
       avatar: avatar ?? teacher.user.avatar,
       isActive: isActive ?? teacher.user.isActive,
     });

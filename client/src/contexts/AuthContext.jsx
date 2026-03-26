@@ -56,12 +56,12 @@ export const AuthProvider = ({ children }) => {
       // Remove confirmPassword before sending to server
       const { confirmPassword, ...payload } = userData;
       const res = await api.post('/auth/register', payload);
-      const { token, user } = res.data;
+      const { token, user, emailDelivery } = res.data;
       localStorage.setItem('token', token);
       localStorage.setItem('user', JSON.stringify(user));
       setUser(user);
       setIsAuthenticated(true);
-      return { success: true, user };
+      return { success: true, user, emailDelivery };
     } catch (error) {
       return { success: false, error: error.response?.data?.message || error.message };
     }

@@ -32,6 +32,15 @@ const Navbar = ({ onMenuClick }) => {
   const notifRef = useRef(null);
   const profileRef = useRef(null);
 
+  const handleToggleNotifications = () => {
+    const nextOpenState = !showNotifications;
+    setShowNotifications(nextOpenState);
+
+    if (nextOpenState && unreadCount > 0) {
+      markAllAsRead();
+    }
+  };
+
   // Close dropdowns when clicking outside
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -81,7 +90,7 @@ const Navbar = ({ onMenuClick }) => {
             <motion.button
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
-              onClick={() => setShowNotifications(!showNotifications)}
+              onClick={handleToggleNotifications}
               className="relative p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
             >
               <Bell className="w-5 h-5 text-slate-600 dark:text-slate-400" />

@@ -59,6 +59,18 @@ const Register = () => {
       const result = await register(formData);
       if (result.success) {
         toast.success('Registration successful!');
+
+        const delivery = result.emailDelivery;
+        if (delivery?.attempted) {
+          if (delivery.sent) {
+            toast.success('Credentials email sent successfully.');
+          } else {
+            toast.warning(`Account created, but email failed: ${delivery.error || 'Unknown SMTP error'}`);
+          }
+        } else {
+          toast.info('Account created. Email service is not configured in server env.');
+        }
+
         navigate(`/${result.user.role}/dashboard`);
       } else {
         toast.error(result.error || 'Registration failed');
@@ -269,7 +281,7 @@ const Register = () => {
           </motion.div>
 
           <p className="mt-8 text-center text-xs text-slate-400 dark:text-slate-600">
-            © {new Date().getFullYear()} FaceAttend. All rights reserved.
+            © {new Date().getFullYear()} AbalBohara. All rights reserved.
           </p>
         </motion.div>
       </div>

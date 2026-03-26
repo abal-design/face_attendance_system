@@ -1,16 +1,18 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Calendar, Clock, MapPin, User, CheckCircle2, AlertCircle, Bell, BookOpen } from 'lucide-react';
+import { Calendar, Clock, MapPin, User, CheckCircle2, AlertCircle, Bell, BookOpen, Camera } from 'lucide-react';
 import Card, { CardBody, CardHeader } from '@/components/ui/Card';
 import Badge from '@/components/ui/Badge';
 import Button from '@/components/ui/Button';
 import Modal from '@/components/ui/Modal';
 import { formatDate } from '@/utils/helpers';
 import { useToast } from '@/contexts/ToastContext';
+import { useAuth } from '@/contexts/AuthContext';
+import api from '@/utils/api';
+import { buildStableDescriptorFromVideo, loadFaceModels } from '@/utils/faceRecognition';
 
-// Mock data for today's classes
-const todayClasses = [
+const todayClassTemplate = [
   { 
     id: 1, 
     subject: 'Computer Science', 
@@ -52,13 +54,149 @@ const todayClasses = [
 const StudentAttendance = () => {
   const navigate = useNavigate();
   const toast = useToast();
+  const { updateUser } = useAuth();
   const [selectedClass, setSelectedClass] = useState(null);
-  const [classes, setClasses] = useState(todayClasses);
+  const [classes, setClasses] = useState(todayClassTemplate);
+  const [studentProfile, setStudentProfile] = useState(null);
   const [showScheduleModal, setShowScheduleModal] = useState(false);
+  const [showFaceModal, setShowFaceModal] = useState(false);
+  const [faceRegistered, setFaceRegistered] = useState(false);
+  const [isRegisteringFace, setIsRegisteringFace] = useState(false);
+  const [cameraReady, setCameraReady] = useState(false);
+  const videoRef = useRef(null);
   
   const completedToday = classes.filter(c => c.status === 'completed' && c.attended).length;
   const totalToday = classes.filter(c => c.status !== 'upcoming').length;
   const upcomingClasses = classes.filter(c => c.status === 'upcoming').length;
+
+  useEffect(() => {
+    let mounted = true;
+
+    const loadLiveStudentAttendance = async () => {
+      try {
+        const meRes = await api.get('/auth/me');
+        const currentUserId = meRes.data.user?.id;
+
+        const studentsRes = await api.get('/students');
+        const students = studentsRes.data.students || [];
+        const student = students.find((entry) => entry.user?.id === currentUserId) || null;
+
+        if (!mounted) return;
+        setStudentProfile(student);
+
+        if (!student?.id) {
+          setClasses(todayClassTemplate);
+          return;
+        }
+
+        const attendanceRes = await api.get('/attendance', {
+          params: { studentId: student.id },
+        });
+
+        const todayIso = new Date().toISOString().slice(0, 10);
+        const todayRecords = (attendanceRes.data.attendance || []).filter(
+          (record) => record.attendanceDate === todayIso
+        );
+
+        const byClassName = new Map(
+          todayRecords.map((record) => [String(record.class?.name || '').toLowerCase(), record])
+        );
+
+        const merged = todayClassTemplate.map((classItem) => {
+          const dbRecord = byClassName.get(classItem.subject.toLowerCase());
+          if (!dbRecord) return classItem;
+
+          return {
+            ...classItem,
+            status: 'completed',
+            attended: dbRecord.status === 'present',
+            teacher: dbRecord.markedBy || classItem.teacher,
+          };
+        });
+
+        if (!mounted) return;
+        setClasses(merged);
+      } catch {
+        if (!mounted) return;
+        setClasses(todayClassTemplate);
+      }
+    };
+
+    loadLiveStudentAttendance();
+    const intervalId = setInterval(loadLiveStudentAttendance, 20000);
+
+    return () => {
+      mounted = false;
+      clearInterval(intervalId);
+    };
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+
+    const loadRegistrationStatus = async () => {
+      try {
+        const response = await api.get('/settings/avatar');
+        if (!mounted) return;
+
+        const avatar = response.data.avatar || '';
+        const hasRegisteredFace = avatar.includes('/uploads/avatars/');
+        setFaceRegistered(hasRegisteredFace);
+      } catch (error) {
+        if (mounted) {
+          const saved = localStorage.getItem('studentFaceRegistered') === 'true';
+          setFaceRegistered(saved);
+        }
+      }
+    };
+
+    loadRegistrationStatus();
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!showFaceModal) {
+      stopCamera();
+      return;
+    }
+
+    let streamInstance;
+
+    const startCamera = async () => {
+      try {
+        await loadFaceModels();
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: 640, height: 480, facingMode: 'user' },
+          audio: false,
+        });
+
+        streamInstance = stream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          await videoRef.current.play();
+          setCameraReady(true);
+        }
+      } catch (error) {
+        setCameraReady(false);
+        toast.error('Camera/model failed to initialize. Please allow permission and check internet for model download.');
+      }
+    };
+
+    startCamera();
+
+    return () => {
+      if (streamInstance) {
+        streamInstance.getTracks().forEach((track) => track.stop());
+      }
+      if (videoRef.current) {
+        videoRef.current.srcObject = null;
+      }
+      setCameraReady(false);
+    };
+  }, [showFaceModal, toast]);
 
   const handleMarkPresent = (classId) => {
     setClasses(prevClasses => 
@@ -72,6 +210,90 @@ const StudentAttendance = () => {
 
   const handleViewDetails = (classItem) => {
     toast.info(`Viewing details for ${classItem.subject}`);
+  };
+
+  const stopCamera = () => {
+    if (videoRef.current?.srcObject) {
+      const stream = videoRef.current.srcObject;
+      const tracks = stream.getTracks ? stream.getTracks() : [];
+      tracks.forEach((track) => track.stop());
+      videoRef.current.srcObject = null;
+    }
+    setCameraReady(false);
+  };
+
+  const handleRegisterFace = async () => {
+    if (!videoRef.current || !cameraReady) {
+      toast.error('Camera is not ready. Please try again.');
+      return;
+    }
+
+    setIsRegisteringFace(true);
+
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = videoRef.current.videoWidth || 640;
+      canvas.height = videoRef.current.videoHeight || 480;
+      const context = canvas.getContext('2d');
+
+      if (!context) {
+        throw new Error('Canvas not supported in this browser');
+      }
+
+      context.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+
+      const stableDescriptorResult = await buildStableDescriptorFromVideo(videoRef.current, {
+        frames: 6,
+        minValidFrames: 4,
+        delayMs: 220,
+      });
+
+      if (!stableDescriptorResult.descriptor) {
+        const reason = stableDescriptorResult.qualityFailure?.reasons?.[0] || 'Face quality is too low. Improve lighting and hold still.';
+        throw new Error(reason);
+      }
+
+      const blob = await new Promise((resolve, reject) => {
+        canvas.toBlob(
+          (fileBlob) => {
+            if (!fileBlob) {
+              reject(new Error('Failed to capture face image'));
+              return;
+            }
+            resolve(fileBlob);
+          },
+          'image/jpeg',
+          0.9
+        );
+      });
+
+      const formData = new FormData();
+      formData.append('image', blob, 'student-face.jpg');
+      formData.append('faceDescriptor', JSON.stringify(stableDescriptorResult.descriptor));
+      formData.append('faceSamples', JSON.stringify(stableDescriptorResult.descriptors || []));
+
+      const response = await api.post('/students/face-registration', formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+      });
+
+      const faceImageUrl = response.data.faceImageUrl;
+      if (faceImageUrl) {
+        updateUser({ avatar: faceImageUrl });
+      }
+
+      localStorage.setItem('studentFaceRegistered', 'true');
+      setFaceRegistered(true);
+      setShowFaceModal(false);
+      stopCamera();
+      toast.success(`Face scanned and saved with ${stableDescriptorResult.validFrames} high-quality frames. Profile was enriched for better attendance matching.`);
+    } catch (error) {
+      const message = error.response?.data?.message || 'Failed to register face. Please try again.';
+      toast.error(message);
+    } finally {
+      setIsRegisteringFace(false);
+    }
   };
 
   const getStatusColor = (status) => {
@@ -103,15 +325,45 @@ const StudentAttendance = () => {
           My Attendance Today
         </h1>
         <p className="text-slate-600 dark:text-slate-400">
-          {formatDate(new Date())} - Track your attendance for today's classes
+          {formatDate(new Date())} - Department: {studentProfile?.department?.name || 'Not assigned'} • Live attendance sync enabled
         </p>
       </motion.div>
+
+      {/* Face registration reminder */}
+      <Card className={`border-2 ${faceRegistered ? 'border-success-200 dark:border-success-800' : 'border-warning-200 dark:border-warning-800'}`}>
+        <CardBody>
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+            <div className="flex items-start gap-3">
+              <div className={`p-2.5 rounded-xl ${faceRegistered ? 'bg-success-100 dark:bg-success-900/30 text-success-600 dark:text-success-400' : 'bg-warning-100 dark:bg-warning-900/30 text-warning-600 dark:text-warning-400'}`}>
+                <Camera className="w-5 h-5" />
+              </div>
+              <div>
+                <p className="font-semibold text-slate-900 dark:text-slate-100">
+                  {faceRegistered ? 'Face Registration Completed' : 'Reminder: Register Your Face'}
+                </p>
+                <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
+                  {faceRegistered
+                    ? 'Your face profile is saved. You can update it anytime from this portal.'
+                    : 'Students can register their face from the student portal for faster attendance marking.'}
+                </p>
+              </div>
+            </div>
+            <Button
+              variant={faceRegistered ? 'secondary' : 'primary'}
+              onClick={() => setShowFaceModal(true)}
+              icon={<Camera className="w-4 h-4" />}
+            >
+              {faceRegistered ? 'Update Face' : 'Register Face'}
+            </Button>
+          </div>
+        </CardBody>
+      </Card>
 
       {/* Today's Stats */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         {[
           { label: 'Classes Attended', value: `${completedToday}/${totalToday}`, icon: CheckCircle2, gradient: 'from-success-500 to-success-700' },
-          { label: 'Current Class', value: todayClasses.find(c => c.status === 'ongoing')?.subject || 'None', icon: Clock, gradient: 'from-warning-500 to-warning-700', small: true },
+          { label: 'Current Class', value: classes.find(c => c.status === 'ongoing')?.subject || 'None', icon: Clock, gradient: 'from-warning-500 to-warning-700', small: true },
           { label: 'Upcoming Classes', value: upcomingClasses, icon: Calendar, gradient: 'from-primary-500 to-primary-700' },
         ].map((stat, i) => (
           <motion.div key={i} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.05 }}>
@@ -257,11 +509,89 @@ const StudentAttendance = () => {
               <Clock className="w-5 h-5 mr-2" />
               View Attendance History
             </Button>
+            <Button
+              variant="outline"
+              className="justify-start"
+              onClick={() => setShowFaceModal(true)}
+            >
+              <Camera className="w-5 h-5 mr-2" />
+              {faceRegistered ? 'Update Face Registration' : 'Register Face'}
+            </Button>
           </div>
         </CardBody>
       </Card>
 
       {/* Schedule Modal */}
+      <Modal
+        isOpen={showFaceModal}
+        onClose={() => {
+          if (isRegisteringFace) return;
+          setShowFaceModal(false);
+          stopCamera();
+        }}
+        title="Face Registration"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-slate-600 dark:text-slate-400">
+            Register your face from the student portal to speed up attendance verification.
+          </p>
+
+          <div className="p-4 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50">
+            <ul className="text-sm text-slate-700 dark:text-slate-300 space-y-2">
+              <li>1. Sit in a well-lit place and face the camera.</li>
+              <li>2. Keep your face centered and avoid covering your eyes.</li>
+              <li>3. Click Register Face to scan and save your face in database.</li>
+            </ul>
+          </div>
+
+          <div className="relative aspect-video rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700 bg-slate-950">
+            <video
+              ref={videoRef}
+              autoPlay
+              playsInline
+              muted
+              className="w-full h-full object-cover"
+            />
+            <div className="absolute top-3 left-3 w-7 h-7 border-l-2 border-t-2 border-primary-500" />
+            <div className="absolute top-3 right-3 w-7 h-7 border-r-2 border-t-2 border-primary-500" />
+            <div className="absolute bottom-3 left-3 w-7 h-7 border-l-2 border-b-2 border-primary-500" />
+            <div className="absolute bottom-3 right-3 w-7 h-7 border-r-2 border-b-2 border-primary-500" />
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+              <div className="w-28 h-16 border-2 border-success-500/90 rounded-lg bg-success-900/20" />
+            </div>
+            {!cameraReady && (
+              <div className="absolute inset-0 flex items-center justify-center bg-slate-900/80 text-slate-200 text-sm font-medium">
+                Waiting for camera...
+              </div>
+            )}
+          </div>
+
+          <div className="flex gap-3">
+            <Button
+              variant="secondary"
+              className="flex-1"
+              onClick={() => {
+                setShowFaceModal(false);
+                stopCamera();
+              }}
+              disabled={isRegisteringFace}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              className="flex-1"
+              onClick={handleRegisterFace}
+              loading={isRegisteringFace}
+              disabled={isRegisteringFace}
+              icon={<Camera className="w-5 h-5" />}
+            >
+              Register Face
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
       <Modal
         isOpen={showScheduleModal}
         onClose={() => setShowScheduleModal(false)}

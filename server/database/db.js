@@ -58,10 +58,11 @@ export async function initializeDatabase() {
       try {
         await conn.query(stmt);
       } catch (err) {
-        // 1826 = ER_FK_DUP_NAME  — FK constraint with that name already exists
-        // 1061 = ER_DUP_KEY_NAME — duplicate key name (older MySQL versions)
-        // Both happen on the ALTER TABLE line on every run after the first — safe to skip.
-        if (err.errno === 1826 || err.errno === 1061) continue;
+        // 1826 = ER_FK_DUP_NAME    — FK constraint already exists
+        // 1061 = ER_DUP_KEY_NAME   — duplicate key name
+        // 1060 = ER_DUP_FIELDNAME  — duplicate column name
+        // These can happen on idempotent ALTER TABLE lines; safe to skip.
+        if (err.errno === 1826 || err.errno === 1061 || err.errno === 1060) continue;
         throw err;
       }
     }

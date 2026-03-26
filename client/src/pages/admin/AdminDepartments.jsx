@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Building2, Plus, Edit, Trash2, Users, BookOpen, Search, AlertTriangle, GraduationCap, BarChart3 } from 'lucide-react';
 import Card, { CardBody, CardHeader } from '@/components/ui/Card';
@@ -8,9 +8,17 @@ import Modal, { ModalBody, ModalFooter } from '@/components/ui/Modal';
 import api from '@/utils/api';
 import { useToast } from '@/contexts/ToastContext';
 
+const getRequestErrorMessage = (error, fallback) => {
+  if (error?.response?.data?.message) return error.response.data.message;
+  if (error?.message) return error.message;
+  return fallback;
+};
+
 const AdminDepartments = () => {
   const [departments, setDepartments] = useState([]);
   const [stats, setStats] = useState({ students: 0, teachers: 0 });
+  const [studentsList, setStudentsList] = useState([]);
+  const [teachersList, setTeachersList] = useState([]);
   const [loadingData, setLoadingData] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [selectedDept, setSelectedDept] = useState(null);
@@ -20,17 +28,80 @@ const AdminDepartments = () => {
   const toast = useToast();
 
   useEffect(() => {
-    Promise.all([
-      api.get('/departments'),
-      api.get('/dashboard'),
-    ]).then(([dRes, statsRes]) => {
-      setDepartments(dRes.data.departments || []);
-      const s = statsRes.data.stats || {};
-      setStats({ students: s.students || 0, teachers: s.teachers || 0 });
-    }).catch(() => {
-      toast.error('Failed to load departments');
-    }).finally(() => setLoadingData(false));
+    let mounted = true;
+
+    const loadDepartmentData = async () => {
+      const [departmentsResult, dashboardResult, studentsResult, teachersResult] = await Promise.allSettled([
+        api.get('/departments'),
+        api.get('/dashboard/stats'),
+        api.get('/students'),
+        api.get('/teachers'),
+      ]);
+
+      if (!mounted) return;
+
+      if (departmentsResult.status === 'fulfilled') {
+        setDepartments(departmentsResult.value.data.departments || []);
+      } else {
+        const message = getRequestErrorMessage(
+          departmentsResult.reason,
+          'Unable to fetch department list'
+        );
+        toast.error(`Failed to load departments: ${message}`);
+      }
+
+      if (dashboardResult.status === 'fulfilled') {
+        const s = dashboardResult.value.data.stats || {};
+        setStats({ students: s.students || 0, teachers: s.teachers || 0 });
+      }
+
+      if (studentsResult.status === 'fulfilled') {
+        setStudentsList(studentsResult.value.data.students || []);
+      } else {
+        setStudentsList([]);
+      }
+
+      if (teachersResult.status === 'fulfilled') {
+        setTeachersList(teachersResult.value.data.teachers || []);
+      } else {
+        setTeachersList([]);
+      }
+
+      setLoadingData(false);
+    };
+
+    loadDepartmentData();
+    const intervalId = setInterval(loadDepartmentData, 20000);
+
+    return () => {
+      mounted = false;
+      clearInterval(intervalId);
+    };
   }, []);
+
+  const departmentCounters = useMemo(() => {
+    const counters = new Map();
+
+    studentsList.forEach((student) => {
+      const departmentId = Number(student.departmentId);
+      if (!departmentId) return;
+
+      const current = counters.get(departmentId) || { students: 0, teachers: 0 };
+      current.students += 1;
+      counters.set(departmentId, current);
+    });
+
+    teachersList.forEach((teacher) => {
+      const departmentId = Number(teacher.departmentId);
+      if (!departmentId) return;
+
+      const current = counters.get(departmentId) || { students: 0, teachers: 0 };
+      current.teachers += 1;
+      counters.set(departmentId, current);
+    });
+
+    return counters;
+  }, [studentsList, teachersList]);
 
   const handleAddDepartment = () => {
     setSelectedDept({ name: '', code: '', description: '' });
@@ -101,6 +172,25 @@ const AdminDepartments = () => {
     d.code.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
+  const getDepartmentStats = (department) => {
+    const departmentId = Number(department?.id);
+    const computed = departmentCounters.get(departmentId);
+
+    return {
+      students: Number(computed?.students ?? department?.studentsCount ?? department?.studentCount ?? department?.students ?? 0),
+      teachers: Number(computed?.teachers ?? department?.teachersCount ?? department?.teacherCount ?? department?.teachers ?? (department?.head ? 1 : 0)),
+    };
+  };
+
+  const getDepartmentHeadName = (department) => (
+    department?.head?.user?.name
+    || department?.head?.teacherId
+    || department?.headTeacher?.user?.name
+    || department?.headTeacher?.teacherId
+    || department?.head
+    || 'Not assigned'
+  );
+
   return (
     <div className="space-y-6">
       <motion.div
@@ -169,7 +259,7 @@ const AdminDepartments = () => {
       {/* Departments grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {filteredDepartments.map((dept, index) => {
-          const stats = getDepartmentStats(dept.name);
+          const stats = getDepartmentStats(dept);
           return (
             <motion.div
               key={dept.id}
@@ -236,7 +326,7 @@ const AdminDepartments = () => {
 
                   <div className="mt-4 pt-4 border-t border-slate-200 dark:border-slate-700">
                     <p className="text-xs text-slate-500 dark:text-slate-500">
-                      Department Head: <span className="font-medium text-slate-700 dark:text-slate-300">{dept.head}</span>
+                      Department Head: <span className="font-medium text-slate-700 dark:text-slate-300">{getDepartmentHeadName(dept)}</span>
                     </p>
                   </div>
                 </CardBody>

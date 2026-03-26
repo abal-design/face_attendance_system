@@ -2,6 +2,8 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
+const cleanEnvValue = (value) => String(value || '').split('#')[0].trim();
+
 const env = {
   NODE_ENV: process.env.NODE_ENV || 'development',
   PORT: Number(process.env.PORT || 5000),
@@ -19,6 +21,12 @@ const env = {
   OPENAI_MODEL: process.env.OPENAI_MODEL || 'gpt-4o-mini',
   OPENAI_BASE_URL: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
   AI_REQUEST_TIMEOUT_MS: Number(process.env.AI_REQUEST_TIMEOUT_MS || 15000),
+  MAIL_USER: cleanEnvValue(process.env.MAIL_USER),
+  MAIL_PASS: cleanEnvValue(process.env.MAIL_PASS).replace(/\s+/g, ''),
+  MAIL_FROM: cleanEnvValue(process.env.MAIL_FROM || process.env.MAIL_USER),
+  SMTP_HOST: process.env.SMTP_HOST || 'smtp.gmail.com',
+  SMTP_PORT: Number(process.env.SMTP_PORT || 587),
+  SMTP_SECURE: (process.env.SMTP_SECURE || 'false').toLowerCase() === 'true',
 };
 
 export default env;

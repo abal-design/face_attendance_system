@@ -25,14 +25,31 @@ export const markNotificationRead = asyncHandler(async (req, res) => {
     throw new ApiError(404, 'Notification not found');
   }
 
+  if (req.user.role !== 'admin' && Number(notification.userId) !== Number(req.user.id)) {
+    throw new ApiError(403, 'You are not allowed to update this notification');
+  }
+
   await notification.update({ isRead: true });
   sendSuccess(res, { message: 'Notification updated successfully', notification });
+});
+
+export const markAllNotificationsRead = asyncHandler(async (req, res) => {
+  await Notification.update(
+    { isRead: true },
+    { where: { userId: req.user.id, isRead: false } }
+  );
+
+  sendSuccess(res, { message: 'All notifications marked as read' });
 });
 
 export const deleteNotification = asyncHandler(async (req, res) => {
   const notification = await Notification.findByPk(req.params.id);
   if (!notification) {
     throw new ApiError(404, 'Notification not found');
+  }
+
+  if (req.user.role !== 'admin' && Number(notification.userId) !== Number(req.user.id)) {
+    throw new ApiError(403, 'You are not allowed to delete this notification');
   }
 
   await notification.destroy();

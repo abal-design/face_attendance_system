@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Calendar, CheckCircle2, XCircle, Filter, Download, Search, TrendingUp, CalendarRange } from 'lucide-react';
 import Card, { CardBody, CardHeader } from '@/components/ui/Card';
@@ -6,21 +6,91 @@ import Badge from '@/components/ui/Badge';
 import Button from '@/components/ui/Button';
 import Input from '@/components/ui/Input';
 import Progress from '@/components/ui/Progress';
-import { generateAttendanceHistory } from '@/utils/mockData';
 import { formatDate } from '@/utils/helpers';
-import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
+import api from '@/utils/api';
 
 const StudentHistory = () => {
+  const [loadingData, setLoadingData] = useState(true);
+  const [studentProfile, setStudentProfile] = useState(null);
+  const [attendanceHistory, setAttendanceHistory] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
   const [currentPage, setCurrentPage] = useState(1);
   const [dateRange, setDateRange] = useState('all'); // all, week, month, semester
   const itemsPerPage = 10;
 
-  const attendanceHistory = generateAttendanceHistory(1);
+  useEffect(() => {
+    let mounted = true;
+
+    const loadHistoryData = async () => {
+      try {
+        const meRes = await api.get('/auth/me');
+        const currentUserId = meRes.data.user?.id;
+
+        const studentsRes = await api.get('/students');
+        const students = studentsRes.data.students || [];
+        const student = students.find((entry) => entry.user?.id === currentUserId) || null;
+
+        if (!mounted) return;
+        setStudentProfile(student);
+
+        if (!student?.id) {
+          setAttendanceHistory([]);
+          return;
+        }
+
+        const attendanceRes = await api.get('/attendance', {
+          params: { studentId: student.id },
+        });
+        const records = attendanceRes.data.attendance || [];
+
+        if (!mounted) return;
+        setAttendanceHistory(records);
+      } catch {
+        if (!mounted) return;
+        setAttendanceHistory([]);
+      } finally {
+        if (mounted) {
+          setLoadingData(false);
+        }
+      }
+    };
+
+    loadHistoryData();
+    const intervalId = setInterval(loadHistoryData, 20000);
+
+    return () => {
+      mounted = false;
+      clearInterval(intervalId);
+    };
+  }, []);
+
+  const filteredByDateRange = useMemo(() => {
+    const now = new Date();
+    const daysByRange = {
+      week: 7,
+      month: 30,
+      semester: 180,
+    };
+
+    if (dateRange === 'all') return attendanceHistory;
+
+    const rangeDays = daysByRange[dateRange] || null;
+    if (!rangeDays) return attendanceHistory;
+
+    const from = new Date(now);
+    from.setDate(now.getDate() - rangeDays);
+
+    return attendanceHistory.filter((record) => {
+      const date = new Date(record.attendanceDate);
+      return !Number.isNaN(date.getTime()) && date >= from;
+    });
+  }, [attendanceHistory, dateRange]);
   
-  const filteredData = attendanceHistory.filter(record => {
-    const matchesSearch = record.subject.toLowerCase().includes(searchQuery.toLowerCase());
+  const filteredData = filteredByDateRange.filter((record) => {
+    const subject = (record.class?.name || record.class?.code || '').toLowerCase();
+    const matchesSearch = subject.includes(searchQuery.toLowerCase());
     const matchesFilter = filterStatus === 'all' || record.status === filterStatus;
     return matchesSearch && matchesFilter;
   });
@@ -32,35 +102,76 @@ const StudentHistory = () => {
   );
 
   const stats = {
-    total: attendanceHistory.length,
-    present: attendanceHistory.filter(r => r.status === 'present').length,
-    absent: attendanceHistory.filter(r => r.status === 'absent').length,
+    total: filteredByDateRange.length,
+    present: filteredByDateRange.filter((r) => r.status === 'present').length,
+    absent: filteredByDateRange.filter((r) => r.status === 'absent').length,
   };
 
-  const attendancePercentage = Math.round((stats.present / stats.total) * 100);
+  const attendancePercentage = stats.total > 0 ? Math.round((stats.present / stats.total) * 100) : 0;
 
-  // Mock data for charts
-  const monthlyData = [
-    { month: 'Sep', present: 18, absent: 2 },
-    { month: 'Oct', present: 20, absent: 1 },
-    { month: 'Nov', present: 17, absent: 3 },
-    { month: 'Dec', present: 19, absent: 1 },
-    { month: 'Jan', present: 21, absent: 0 },
-    { month: 'Feb', present: 18, absent: 2 },
-  ];
+  const monthlyData = useMemo(() => {
+    const now = new Date();
+    const buckets = [];
 
-  const subjectWiseData = [
-    { subject: 'Computer Science', attendance: 95 },
-    { subject: 'Mathematics', attendance: 92 },
-    { subject: 'Physics', attendance: 88 },
-    { subject: 'Chemistry', attendance: 90 },
-    { subject: 'English', attendance: 94 },
-  ];
+    for (let i = 5; i >= 0; i -= 1) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      buckets.push({
+        key,
+        month: d.toLocaleString('en-US', { month: 'short' }),
+        present: 0,
+        absent: 0,
+      });
+    }
+
+    const byKey = new Map(buckets.map((item) => [item.key, item]));
+
+    filteredByDateRange.forEach((record) => {
+      const d = new Date(record.attendanceDate);
+      if (Number.isNaN(d.getTime())) return;
+
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      const bucket = byKey.get(key);
+      if (!bucket) return;
+
+      if (record.status === 'present') {
+        bucket.present += 1;
+      } else {
+        bucket.absent += 1;
+      }
+    });
+
+    return buckets;
+  }, [filteredByDateRange]);
+
+  const subjectWiseData = useMemo(() => {
+    const bySubject = new Map();
+
+    filteredByDateRange.forEach((record) => {
+      const subject = record.class?.name || record.class?.code || 'Unknown Class';
+      const current = bySubject.get(subject) || { subject, present: 0, total: 0 };
+      current.total += 1;
+      if (record.status === 'present') current.present += 1;
+      bySubject.set(subject, current);
+    });
+
+    return Array.from(bySubject.values())
+      .map((item) => ({
+        subject: item.subject,
+        attendance: item.total > 0 ? Math.round((item.present / item.total) * 100) : 0,
+      }))
+      .sort((a, b) => b.attendance - a.attendance)
+      .slice(0, 6);
+  }, [filteredByDateRange]);
 
   const pieData = [
     { name: 'Present', value: stats.present, color: '#10b981' },
     { name: 'Absent', value: stats.absent, color: '#ef4444' },
   ];
+
+  if (loadingData) {
+    return <div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-10 w-10 border-t-2 border-primary-500" /></div>;
+  }
 
   return (
     <div className="space-y-6">
@@ -72,7 +183,7 @@ const StudentHistory = () => {
           Attendance History
         </h1>
         <p className="text-slate-600 dark:text-slate-400">
-          Complete attendance records and analytics
+          Department: {studentProfile?.department?.name || 'Not assigned'} • Live records from database
         </p>
       </motion.div>
 
@@ -304,20 +415,20 @@ const StudentHistory = () => {
               <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
                 {paginatedData.map((record, index) => (
                   <motion.tr
-                    key={record.id}
+                    key={`${record.id}-${record.attendanceDate}`}
                     initial={{ opacity: 0, x: -20 }}
                     animate={{ opacity: 1, x: 0 }}
                     transition={{ delay: index * 0.05 }}
                     className="hover:bg-slate-50 dark:hover:bg-slate-800/50"
                   >
                     <td className="px-6 py-4 text-sm text-slate-900 dark:text-slate-100">
-                      {formatDate(record.date)}
+                      {formatDate(record.attendanceDate)}
                     </td>
                     <td className="px-6 py-4 text-sm font-medium text-slate-900 dark:text-slate-100">
-                      {record.subject}
+                      {record.class?.name || record.class?.code || 'Class'}
                     </td>
                     <td className="px-6 py-4 text-sm text-slate-600 dark:text-slate-400">
-                      {record.time}
+                      {record.markedAt ? new Date(record.markedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-'}
                     </td>
                     <td className="px-6 py-4">
                       <Badge variant={record.status === 'present' ? 'success' : 'danger'} className="capitalize">
@@ -325,10 +436,17 @@ const StudentHistory = () => {
                       </Badge>
                     </td>
                     <td className="px-6 py-4 text-sm text-slate-600 dark:text-slate-400">
-                      {record.markedBy}
+                      {record.markedBy || 'System'}
                     </td>
                   </motion.tr>
                 ))}
+                {paginatedData.length === 0 && (
+                  <tr>
+                    <td className="px-6 py-8 text-sm text-slate-500 dark:text-slate-400" colSpan={5}>
+                      No attendance records found for the selected filters.
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>

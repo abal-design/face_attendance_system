@@ -1,4 +1,6 @@
-import { createContext, useContext, useState, useCallback } from 'react';
+import { createContext, useContext, useState, useCallback, useEffect } from 'react';
+import api from '@/utils/api';
+import { useAuth } from '@/contexts/AuthContext';
 
 const NotificationContext = createContext(null);
 
@@ -11,24 +13,38 @@ export const useNotifications = () => {
 };
 
 export const NotificationProvider = ({ children }) => {
-  const [notifications, setNotifications] = useState([
-    {
-      id: '1',
-      title: 'Welcome to FaceAttend',
-      message: 'Your account has been successfully created.',
-      type: 'info',
-      read: false,
-      timestamp: new Date(Date.now() - 3600000).toISOString(),
-    },
-    {
-      id: '2',
-      title: 'Attendance Recorded',
-      message: 'Your attendance for today has been marked.',
-      type: 'success',
-      read: false,
-      timestamp: new Date(Date.now() - 7200000).toISOString(),
-    },
-  ]);
+  const { user, isAuthenticated } = useAuth();
+  const [notifications, setNotifications] = useState([]);
+
+  const mapNotification = useCallback((notification) => ({
+    id: String(notification.id),
+    title: notification.title,
+    message: notification.message,
+    type: notification.type || 'info',
+    read: Boolean(notification.isRead),
+    timestamp: notification.createdAt || new Date().toISOString(),
+  }), []);
+
+  const loadNotifications = useCallback(async () => {
+    if (!isAuthenticated || !user?.id) {
+      setNotifications([]);
+      return;
+    }
+
+    try {
+      const response = await api.get('/notifications');
+      const list = Array.isArray(response.data.notifications)
+        ? response.data.notifications.map(mapNotification)
+        : [];
+      setNotifications(list);
+    } catch (error) {
+      console.error('Failed to load notifications:', error);
+    }
+  }, [isAuthenticated, mapNotification, user?.id]);
+
+  useEffect(() => {
+    loadNotifications();
+  }, [loadNotifications]);
 
   const addNotification = useCallback((notification) => {
     const newNotification = {
@@ -42,17 +58,27 @@ export const NotificationProvider = ({ children }) => {
   }, []);
 
   const markAsRead = useCallback((id) => {
+    const targetId = String(id);
+
     setNotifications(prev =>
       prev.map(notif =>
-        notif.id === id ? { ...notif, read: true } : notif
+        notif.id === targetId ? { ...notif, read: true } : notif
       )
     );
+
+    api.patch(`/notifications/${targetId}/read`).catch(() => {
+      // Keep optimistic UI; latest state sync can happen on next load.
+    });
   }, []);
 
   const markAllAsRead = useCallback(() => {
     setNotifications(prev =>
       prev.map(notif => ({ ...notif, read: true }))
     );
+
+    api.patch('/notifications/read-all').catch(() => {
+      // Keep optimistic UI; latest state sync can happen on next load.
+    });
   }, []);
 
   const deleteNotification = useCallback((id) => {
@@ -68,6 +94,7 @@ export const NotificationProvider = ({ children }) => {
   const value = {
     notifications,
     unreadCount,
+    loadNotifications,
     addNotification,
     markAsRead,
     markAllAsRead,

@@ -27,6 +27,7 @@ import { useToast } from '@/contexts/ToastContext';
 import { useAuth } from '@/contexts/AuthContext';
 import api from '@/utils/api';
 import Progress from '@/components/ui/Progress';
+import { detectFaceWithDescriptor, evaluateFrameQuality, findBestFaceMatch, loadFaceModels } from '@/utils/faceRecognition';
 
 const parseTimeToMinutes = (time = '00:00:00') => {
   const [hours = 0, minutes = 0] = String(time).split(':').map(Number);
@@ -35,35 +36,66 @@ const parseTimeToMinutes = (time = '00:00:00') => {
 
 const formatTimeShort = (time = '00:00:00') => String(time).slice(0, 5);
 
+const FACE_MATCH_THRESHOLD = 0.56;
+const MATCH_CONFIRMATION_FRAMES = 3;
+const normalizeSection = (value) => String(value || '').trim().toLowerCase();
+
+const getRequestErrorMessage = (error, fallback) => {
+  if (error?.response?.data?.message) return error.response.data.message;
+  if (error?.message) return error.message;
+  return fallback;
+};
+
 const TeacherAttendance = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
   const [cameraActive, setCameraActive] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [students, setStudents] = useState([]);
+  const [allStudents, setAllStudents] = useState([]);
   const [detectedFaces, setDetectedFaces] = useState([]);
+  const [trackingMeta, setTrackingMeta] = useState({
+    status: 'idle',
+    confidence: null,
+    matchedName: '',
+  });
   const [classes, setClasses] = useState([]);
   const [departments, setDepartments] = useState([]);
   const [schedules, setSchedules] = useState([]);
   const [currentDateTime, setCurrentDateTime] = useState(new Date());
   const [hasAutoSelectedClass, setHasAutoSelectedClass] = useState(false);
+  const [cameraDevices, setCameraDevices] = useState([]);
+  const [selectedCameraId, setSelectedCameraId] = useState('');
   const videoRef = useRef(null);
+  const streamRef = useRef(null);
+  const studentsRef = useRef([]);
+  const confirmedMatchIdsRef = useRef(new Set());
+  const scanningIntervalRef = useRef(null);
+  const lastFacePromptAtRef = useRef(0);
+  const pendingMatchRef = useRef({ studentId: null, frames: 0 });
   const toast = useToast();
+
+  useEffect(() => {
+    studentsRef.current = students;
+  }, [students]);
 
   useEffect(() => {
     let isMounted = true;
 
     const loadActivationData = async () => {
-      const [classesResult, schedulesResult, departmentsResult] = await Promise.allSettled([
+      const [classesResult, schedulesResult, departmentsResult, studentsResult] = await Promise.allSettled([
         api.get('/classes'),
         api.get('/schedule'),
         api.get('/departments'),
+        api.get('/students'),
       ]);
 
       if (!isMounted) return;
 
       if (classesResult.status === 'fulfilled') {
         const raw = classesResult.value.data.classes || [];
+        const rawStudents = studentsResult.status === 'fulfilled' ? (studentsResult.value.data.students || []) : [];
+        setAllStudents(rawStudents);
         setClasses(
           raw.map((c) => ({
             id: c.id,
@@ -71,7 +103,15 @@ const TeacherAttendance = () => {
             section: c.section || '',
             semester: c.academicYear || '',
             departmentId: c.department?.id || null,
-            students: 0,
+            students: rawStudents.filter((student) => {
+              const sectionMatches = c.section
+                ? normalizeSection(student.section) === normalizeSection(c.section)
+                : true;
+              const departmentMatches = c.department?.id
+                ? Number(student.departmentId ?? student.department?.id) === Number(c.department.id)
+                : true;
+              return sectionMatches && departmentMatches;
+            }).length,
           }))
         );
       } else {
@@ -84,6 +124,12 @@ const TeacherAttendance = () => {
 
       if (departmentsResult.status === 'fulfilled') {
         setDepartments(departmentsResult.value.data.departments || []);
+      } else {
+        const message = getRequestErrorMessage(
+          departmentsResult.reason,
+          'Failed to load departments. Please refresh and try again.'
+        );
+        toast.error(`Failed to load departments: ${message}`);
       }
     };
 
@@ -101,6 +147,41 @@ const TeacherAttendance = () => {
 
     return () => clearInterval(timer);
   }, []);
+
+  const refreshCameraDevices = async () => {
+    if (!navigator.mediaDevices?.enumerateDevices) return;
+
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const videoInputs = devices.filter((device) => device.kind === 'videoinput');
+      setCameraDevices(videoInputs);
+
+      if (!videoInputs.length) {
+        setSelectedCameraId('');
+        return;
+      }
+
+      const hasSelected = videoInputs.some((device) => device.deviceId === selectedCameraId);
+      if (!hasSelected) {
+        setSelectedCameraId(videoInputs[0].deviceId);
+      }
+    } catch (error) {
+      console.error('Failed to enumerate cameras:', error);
+    }
+  };
+
+  useEffect(() => {
+    refreshCameraDevices();
+
+    if (!navigator.mediaDevices?.addEventListener) return undefined;
+
+    const handleDeviceChange = () => {
+      refreshCameraDevices();
+    };
+
+    navigator.mediaDevices.addEventListener('devicechange', handleDeviceChange);
+    return () => navigator.mediaDevices.removeEventListener('devicechange', handleDeviceChange);
+  }, [selectedCameraId]);
 
   // Authentication state
   const [attendanceActive, setAttendanceActive] = useState(false);
@@ -120,7 +201,6 @@ const TeacherAttendance = () => {
     code: '',
     section: '',
     semester: '',
-    academicYear: '',
     room: '',
     departmentId: '',
   });
@@ -143,6 +223,16 @@ const TeacherAttendance = () => {
   const filteredClasses = attendanceMode === 'manual' && selectedSection
     ? classes.filter((classItem) => classItem.section === selectedSection)
     : classes;
+
+  const getClassStudentCount = (classItem) => allStudents.filter((student) => {
+    const sectionMatches = classItem.section
+      ? normalizeSection(student.section) === normalizeSection(classItem.section)
+      : true;
+    const departmentMatches = classItem.departmentId
+      ? Number(student.departmentId ?? student.department?.id) === Number(classItem.departmentId)
+      : true;
+    return sectionMatches && departmentMatches;
+  }).length;
 
   useEffect(() => {
     if (selectedClass || !suggestedClass || hasAutoSelectedClass) return;
@@ -194,6 +284,7 @@ const TeacherAttendance = () => {
       ]);
 
       const rawStudents = studentsRes.data.students || [];
+      setAllStudents(rawStudents);
       const existingAttendance = attendanceRes.data.attendance || [];
       const existingByStudentId = new Map(
         existingAttendance.map((record) => [Number(record.studentId), record.status])
@@ -203,16 +294,47 @@ const TeacherAttendance = () => {
         ? rawStudents.filter((student) => Number(student.department?.id) === Number(classItem.departmentId))
         : rawStudents;
 
-      setStudents(
-        filteredStudents.map((student) => ({
+      const sectionScopedStudents = classItem.section
+        ? filteredStudents.filter((student) => normalizeSection(student.section) === normalizeSection(classItem.section))
+        : filteredStudents;
+
+      const mappedStudents = sectionScopedStudents.map((student) => ({
           id: student.id,
           name: student.user?.name || student.studentId,
           email: student.user?.email || '',
           status: existingByStudentId.get(Number(student.id)) || 'pending',
+          faceDescriptor: (() => {
+            if (!student.faceDescriptor) return null;
+            try {
+              const parsed = JSON.parse(student.faceDescriptor);
+              return Array.isArray(parsed) ? parsed.map((value) => Number(value)) : null;
+            } catch (error) {
+              return null;
+            }
+          })(),
+          faceSamples: (() => {
+            if (!student.faceSamples) return [];
+            try {
+              const parsed = JSON.parse(student.faceSamples);
+              if (!Array.isArray(parsed)) return [];
+              return parsed
+                .filter((sample) => Array.isArray(sample))
+                .map((sample) => sample.map((value) => Number(value)))
+                .filter((sample) => sample.length > 0 && !sample.some((value) => Number.isNaN(value)));
+            } catch (error) {
+              return [];
+            }
+          })(),
           avatar:
             student.user?.avatar ||
             `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(student.studentId || String(student.id))}`,
-        }))
+        }));
+
+      setStudents(mappedStudents);
+      confirmedMatchIdsRef.current = new Set(
+        mappedStudents
+          .filter((student) => student.status === 'present')
+          .map((student) => Number(student.id))
       );
     } catch (error) {
       toast.error('Unable to load students for attendance');
@@ -350,7 +472,6 @@ const TeacherAttendance = () => {
       code: '',
       section: selectedSection || '',
       semester: '',
-      academicYear: '',
       room: '',
       departmentId: '',
     });
@@ -375,7 +496,6 @@ const TeacherAttendance = () => {
         code: newClassForm.code.trim().toUpperCase(),
         section: newClassForm.section.trim() || null,
         semester: newClassForm.semester ? Number(newClassForm.semester) : null,
-        academicYear: newClassForm.academicYear.trim() || null,
         room: newClassForm.room.trim() || null,
         departmentId: newClassForm.departmentId ? Number(newClassForm.departmentId) : null,
       };
@@ -388,7 +508,15 @@ const TeacherAttendance = () => {
         section: createdClass.section || '',
         semester: createdClass.academicYear || '',
         departmentId: createdClass.departmentId || null,
-        students: 0,
+        students: allStudents.filter((student) => {
+          const sectionMatches = createdClass.section
+            ? normalizeSection(student.section) === normalizeSection(createdClass.section)
+            : true;
+          const departmentMatches = createdClass.departmentId
+            ? Number(student.departmentId ?? student.department?.id) === Number(createdClass.departmentId)
+            : true;
+          return sectionMatches && departmentMatches;
+        }).length,
       };
 
       setClasses((prev) => [mappedClass, ...prev]);
@@ -409,76 +537,333 @@ const TeacherAttendance = () => {
   };
 
   const startCamera = async () => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      toast.error('Camera API unavailable. Use HTTPS or localhost and a supported browser.');
+      return;
+    }
+
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 1280, height: 720 }
-      });
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
       }
+
+      let stream = null;
+      let lastStreamError = null;
+      const preferredVideoConstraint = selectedCameraId
+        ? {
+            deviceId: { exact: selectedCameraId },
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+          }
+        : {
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+            facingMode: 'user',
+          };
+      const constraintsList = [
+        {
+          video: preferredVideoConstraint,
+          audio: false,
+        },
+        { video: true, audio: false },
+      ];
+
+      for (const constraints of constraintsList) {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia(constraints);
+          break;
+        } catch (streamError) {
+          lastStreamError = streamError;
+          stream = null;
+
+          // Permission rejection or blocked device should not keep retrying blindly.
+          if (streamError?.name === 'NotAllowedError' || streamError?.name === 'SecurityError') {
+            throw streamError;
+          }
+        }
+      }
+
+      if (!stream) {
+        if (lastStreamError) throw lastStreamError;
+        throw new Error('Unable to initialize camera stream');
+      }
+
+      if (!videoRef.current) {
+        setCameraActive(true);
+        for (let attempt = 0; attempt < 12 && !videoRef.current; attempt += 1) {
+          // Wait briefly for React to render the preview element.
+          // eslint-disable-next-line no-await-in-loop
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+      }
+
+      const video = videoRef.current;
+      if (!video) {
+        stream.getTracks().forEach((track) => track.stop());
+        setCameraActive(false);
+        throw new Error('Camera preview element not ready');
+      }
+
+      streamRef.current = stream;
+      video.srcObject = stream;
+      video.muted = true;
+      video.playsInline = true;
+
+      await new Promise((resolve) => {
+        if (video.readyState >= 2) {
+          resolve();
+          return;
+        }
+        const handleLoadedMetadata = () => {
+          video.removeEventListener('loadedmetadata', handleLoadedMetadata);
+          resolve();
+        };
+        video.addEventListener('loadedmetadata', handleLoadedMetadata);
+      });
+
+      try {
+        await video.play();
+      } catch {
+        // Ignore transient autoplay rejections; stream remains attached.
+      }
+
+      const [videoTrack] = stream.getVideoTracks();
+      if (videoTrack) {
+        if (videoTrack.getSettings) {
+          const settings = videoTrack.getSettings();
+          if (settings.deviceId) {
+            setSelectedCameraId(settings.deviceId);
+          }
+        }
+
+        videoTrack.onended = () => {
+          streamRef.current = null;
+          setCameraActive(false);
+          setScanning(false);
+          setDetectedFaces([]);
+          toast.warning('Camera stream ended. Please start camera again.');
+        };
+      }
+
       setCameraActive(true);
       toast.success('Camera activated successfully');
+
+      // Start tracking immediately once camera feed is ready.
+      await startScanning();
     } catch (error) {
-      toast.error('Failed to access camera');
+      const name = error?.name || '';
+      if (name === 'NotAllowedError') {
+        toast.error('Camera permission denied. Please allow camera access.');
+      } else if (name === 'SecurityError') {
+        toast.error('Camera blocked by browser security policy. Use HTTPS or localhost.');
+      } else if (name === 'NotFoundError') {
+        toast.error('No camera device found on this system.');
+      } else if (name === 'NotReadableError') {
+        toast.error('Camera is busy in another app. Close it and try again.');
+      } else if (name === 'OverconstrainedError') {
+        toast.error('Requested camera constraints are unsupported. Please retry.');
+      } else if (name === 'AbortError') {
+        toast.error('Camera startup was interrupted. Please retry.');
+      } else {
+        toast.error(error?.message || 'Failed to access camera');
+      }
       console.error('Camera error:', error);
     }
   };
 
   const stopCamera = () => {
-    if (videoRef.current && videoRef.current.srcObject) {
-      const tracks = videoRef.current.srcObject.getTracks();
+    if (scanningIntervalRef.current) {
+      clearInterval(scanningIntervalRef.current);
+      scanningIntervalRef.current = null;
+    }
+
+    const activeStream = streamRef.current || videoRef.current?.srcObject;
+    if (activeStream) {
+      const tracks = activeStream.getTracks();
       tracks.forEach(track => track.stop());
+      streamRef.current = null;
+    }
+
+    if (videoRef.current) {
       videoRef.current.srcObject = null;
     }
+
     setCameraActive(false);
     setScanning(false);
+    setDetectedFaces([]);
+    setTrackingMeta({ status: 'idle', confidence: null, matchedName: '' });
     toast.info('Camera stopped');
   };
 
-  const startScanning = () => {
+  const startScanning = async () => {
+    if (!videoRef.current?.srcObject) {
+      toast.error('Start the camera before running face recognition');
+      return;
+    }
+
+    if (videoRef.current.readyState < 2 || !videoRef.current.videoWidth || !videoRef.current.videoHeight) {
+      toast.info('Camera is warming up. Please try again in a second.');
+      return;
+    }
+
+    if (students.length === 0) {
+      toast.error('No students loaded. Please load students before scanning.');
+      return;
+    }
+
+    if (scanningIntervalRef.current) {
+      clearInterval(scanningIntervalRef.current);
+      scanningIntervalRef.current = null;
+    }
+
+    try {
+      await loadFaceModels();
+    } catch (error) {
+      toast.error('Failed to load face recognition model. Check internet and retry.');
+      return;
+    }
+
     setScanning(true);
+    setTrackingMeta({ status: 'searching', confidence: null, matchedName: '' });
+    confirmedMatchIdsRef.current = new Set(
+      studentsRef.current
+        .filter((student) => student.status === 'present')
+        .map((student) => Number(student.id))
+    );
     toast.info('Face recognition started');
-    
-    // Simulate face detection
-    const interval = setInterval(() => {
-      const pendingStudents = students.filter(s => s.status === 'pending');
-      if (pendingStudents.length > 0) {
-        const randomStudent = pendingStudents[Math.floor(Math.random() * pendingStudents.length)];
-        
-        // Simulate face detection with bounding box
-        setDetectedFaces([{
-          id: randomStudent.id,
-          x: Math.random() * 60 + 20,
-          y: Math.random() * 60 + 20,
-          width: 20,
-          height: 25,
-        }]);
 
-        setTimeout(() => {
-          setStudents(prev =>
-            prev.map(s =>
-              s.id === randomStudent.id ? { ...s, status: 'present' } : s
-            )
-          );
-          toast.success(`${randomStudent.name} marked present`);
+    scanningIntervalRef.current = setInterval(() => {
+      const runRecognition = async () => {
+        if (!videoRef.current) return;
+
+        const detection = await detectFaceWithDescriptor(videoRef.current);
+        if (!detection?.descriptor || !detection.box) {
           setDetectedFaces([]);
-        }, 1500);
-      } else {
-        clearInterval(interval);
-        setScanning(false);
-        toast.success('All students processed');
-      }
-    }, 3000);
+          setTrackingMeta({ status: 'no-face', confidence: null, matchedName: '' });
+          pendingMatchRef.current = { studentId: null, frames: 0 };
+          return;
+        }
 
-    return () => clearInterval(interval);
+        const box = detection.box;
+        const width = videoRef.current.videoWidth || 1;
+        const height = videoRef.current.videoHeight || 1;
+        setDetectedFaces([
+          {
+            id: `detected-${Date.now()}`,
+            x: (box.x / width) * 100,
+            y: (box.y / height) * 100,
+            width: (box.width / width) * 100,
+            height: (box.height / height) * 100,
+          },
+        ]);
+
+        const quality = evaluateFrameQuality(videoRef.current, box);
+        if (!quality.isValid) {
+          setTrackingMeta({ status: 'low-quality', confidence: null, matchedName: '' });
+          const now = Date.now();
+          if (now - lastFacePromptAtRef.current > 7000) {
+            toast.info(quality.reasons[0] || 'Improve face quality and try again.');
+            lastFacePromptAtRef.current = now;
+          }
+          pendingMatchRef.current = { studentId: null, frames: 0 };
+          return;
+        }
+
+        const candidateStudents = studentsRef.current.filter(
+          (student) => student.status !== 'present' && Array.isArray(student.faceDescriptor) && student.faceDescriptor.length > 0
+        );
+
+        if (candidateStudents.length === 0) {
+          const now = Date.now();
+          if (now - lastFacePromptAtRef.current > 8000) {
+            toast.warning('No registered face profiles found. Ask students to register face first.');
+            lastFacePromptAtRef.current = now;
+          }
+          pendingMatchRef.current = { studentId: null, frames: 0 };
+          return;
+        }
+
+        const { match, confidence } = findBestFaceMatch(detection.descriptor, candidateStudents, FACE_MATCH_THRESHOLD);
+        if (!match) {
+          setTrackingMeta({ status: 'face-detected', confidence: null, matchedName: '' });
+          const now = Date.now();
+          if (now - lastFacePromptAtRef.current > 7000) {
+            toast.info('Face detected but no reliable match. Keep face centered and retry.');
+            lastFacePromptAtRef.current = now;
+          }
+          pendingMatchRef.current = { studentId: null, frames: 0 };
+          return;
+        }
+
+        const nextFrames = pendingMatchRef.current.studentId === match.id
+          ? pendingMatchRef.current.frames + 1
+          : 1;
+
+        setTrackingMeta({
+          status: 'matching',
+          confidence,
+          matchedName: match.name,
+        });
+
+        pendingMatchRef.current = { studentId: match.id, frames: nextFrames };
+
+        if (nextFrames >= MATCH_CONFIRMATION_FRAMES) {
+          if (confirmedMatchIdsRef.current.has(Number(match.id))) {
+            pendingMatchRef.current = { studentId: null, frames: 0 };
+            return;
+          }
+
+          setStudents((prev) =>
+            prev.map((student) => (
+              student.id === match.id && student.status !== 'present'
+                ? { ...student, status: 'present' }
+                : student
+            ))
+          );
+
+          confirmedMatchIdsRef.current.add(Number(match.id));
+
+          pendingMatchRef.current = { studentId: null, frames: 0 };
+          setTrackingMeta({
+            status: 'confirmed',
+            confidence,
+            matchedName: match.name,
+          });
+          toast.success(`${match.name} matched (${confidence}% confidence) and marked present.`);
+        }
+      };
+
+      runRecognition().catch(() => {
+        const now = Date.now();
+        if (now - lastFacePromptAtRef.current > 8000) {
+          toast.error('Recognition failed for this frame. Please keep camera stable.');
+          lastFacePromptAtRef.current = now;
+        }
+      });
+    }, 300);
+  };
+
+  const pauseScanning = () => {
+    if (scanningIntervalRef.current) {
+      clearInterval(scanningIntervalRef.current);
+      scanningIntervalRef.current = null;
+    }
+    setScanning(false);
+    setDetectedFaces([]);
+    setTrackingMeta({ status: 'paused', confidence: null, matchedName: '' });
+    pendingMatchRef.current = { studentId: null, frames: 0 };
+    toast.info('Face recognition paused');
   };
 
   const markManually = (studentId, status) => {
-    setStudents(prev =>
-      prev.map(s => s.id === studentId ? { ...s, status } : s)
+    const student = students.find((s) => s.id === studentId);
+    setStudents((prev) =>
+      prev.map((s) => (s.id === studentId ? { ...s, status } : s))
     );
-    const student = students.find(s => s.id === studentId);
-    toast.success(`${student.name} marked ${status}`);
+    if (student) {
+      toast.success(`${student.name} marked ${status}`);
+    }
   };
 
   const completeAttendance = async () => {
@@ -699,7 +1084,7 @@ const TeacherAttendance = () => {
                           </div>
                         </div>
                         <Badge variant={activeEntry ? 'success' : 'default'}>
-                          {activeEntry ? 'Active now' : `${classItem.students} students`}
+                          {activeEntry ? 'Active now' : `${getClassStudentCount(classItem)} students`}
                         </Badge>
                       </div>
                     </motion.button>
@@ -774,14 +1159,23 @@ const TeacherAttendance = () => {
                   {selectedClass?.name} - Section {selectedClass?.section}
                 </p>
               </div>
-              <Badge variant="success" className="text-base px-4 py-2">
-                <CheckCircle2 className="w-4 h-4 mr-2" />
-                Session Active
-              </Badge>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={openCreateClassModal}
+                >
+                  Create Class
+                </Button>
+                <Badge variant="success" className="text-base px-4 py-2">
+                  <CheckCircle2 className="w-4 h-4 mr-2" />
+                  Session Active
+                </Badge>
+              </div>
             </div>
             <p className="text-slate-600 dark:text-slate-400">
               {attendanceMode === 'face'
-                ? 'Use AI-powered face recognition to mark attendance automatically'
+                ? 'AI face recognition is active with quality checks and multi-frame confirmation for better accuracy.'
                 : `Manual attendance mode is active for ${attendanceDate}. Mark each student as present or absent.`}
             </p>
           </motion.div>
@@ -888,6 +1282,31 @@ const TeacherAttendance = () => {
                   )}
                 </div>
               </div>
+              <div className="flex items-center gap-2">
+                <select
+                  value={selectedCameraId}
+                  onChange={(e) => setSelectedCameraId(e.target.value)}
+                  disabled={cameraActive}
+                  className="w-56 px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100"
+                >
+                  {cameraDevices.length === 0 && (
+                    <option value="">Default Camera</option>
+                  )}
+                  {cameraDevices.map((device, index) => (
+                    <option key={device.deviceId || `camera-${index}`} value={device.deviceId}>
+                      {device.label || `Camera ${index + 1}`}
+                    </option>
+                  ))}
+                </select>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={refreshCameraDevices}
+                  disabled={cameraActive}
+                >
+                  Refresh
+                </Button>
+              </div>
               <div className="flex gap-2">
                 {!cameraActive ? (
                   <Button onClick={startCamera} icon={<Camera className="w-4 h-4" />}>
@@ -901,11 +1320,11 @@ const TeacherAttendance = () => {
                         variant="success"
                         icon={<Zap className="w-4 h-4" />}
                       >
-                        Start Detection
+                        Resume Detection
                       </Button>
                     ) : (
                       <Button
-                        onClick={() => setScanning(false)}
+                        onClick={pauseScanning}
                         variant="warning"
                         icon={<Pause className="w-4 h-4" />}
                       >
@@ -932,8 +1351,37 @@ const TeacherAttendance = () => {
                     ref={videoRef}
                     autoPlay
                     playsInline
+                    muted
                     className="w-full h-full object-cover"
                   />
+
+                  <div className="absolute top-3 left-3 z-20 rounded-lg bg-black/60 px-3 py-2 text-xs text-white backdrop-blur-sm">
+                    <p className="font-semibold tracking-wide">LIVE TRACKING</p>
+                    <p className="mt-1">
+                      Status:{' '}
+                      {trackingMeta.status === 'confirmed'
+                        ? 'Matched'
+                        : trackingMeta.status === 'matching'
+                          ? 'Matching'
+                          : trackingMeta.status === 'face-detected'
+                            ? 'Face detected'
+                            : trackingMeta.status === 'low-quality'
+                              ? 'Low quality frame'
+                              : trackingMeta.status === 'no-face'
+                                ? 'No face'
+                                : trackingMeta.status === 'paused'
+                                  ? 'Paused'
+                                  : trackingMeta.status === 'searching'
+                                    ? 'Searching'
+                                    : 'Idle'}
+                    </p>
+                    {trackingMeta.matchedName && (
+                      <p className="mt-1">Student: {trackingMeta.matchedName}</p>
+                    )}
+                    {trackingMeta.confidence !== null && (
+                      <p className="mt-1">Confidence: {trackingMeta.confidence}%</p>
+                    )}
+                  </div>
                   
                   {/* Scanning overlay */}
                   {scanning && (
@@ -1062,34 +1510,42 @@ const TeacherAttendance = () => {
                         {student.email}
                       </p>
                     </div>
-                    <div>
-                      {student.status === 'pending' ? (
-                        <div className="flex gap-1">
-                          <motion.button
-                            whileHover={{ scale: 1.1 }}
-                            whileTap={{ scale: 0.9 }}
-                            onClick={() => markManually(student.id, 'present')}
-                            className="p-1.5 rounded-lg bg-success-100 dark:bg-success-900/30 text-success-600 dark:text-success-400 hover:bg-success-200 dark:hover:bg-success-900/50"
-                          >
-                            <CheckCircle2 className="w-4 h-4" />
-                          </motion.button>
-                          <motion.button
-                            whileHover={{ scale: 1.1 }}
-                            whileTap={{ scale: 0.9 }}
-                            onClick={() => markManually(student.id, 'absent')}
-                            className="p-1.5 rounded-lg bg-danger-100 dark:bg-danger-900/30 text-danger-600 dark:text-danger-400 hover:bg-danger-200 dark:hover:bg-danger-900/50"
-                          >
-                            <XCircle className="w-4 h-4" />
-                          </motion.button>
-                        </div>
-                      ) : (
-                        <Badge
-                          variant={student.status === 'present' ? 'success' : 'danger'}
-                          className="capitalize"
-                        >
-                          {student.status}
-                        </Badge>
-                      )}
+                    <div className="flex gap-1">
+                      <motion.button
+                        whileHover={{ scale: 1.05 }}
+                        whileTap={{ scale: 0.95 }}
+                        onClick={() => markManually(student.id, 'present')}
+                        className={`p-1.5 rounded-lg transition-colors ${
+                          student.status === 'present'
+                            ? 'bg-success-500 text-white'
+                            : 'bg-success-100 dark:bg-success-900/30 text-success-600 dark:text-success-400 hover:bg-success-200 dark:hover:bg-success-900/50'
+                        }`}
+                        title="Mark Present"
+                      >
+                        <CheckCircle2 className="w-4 h-4" />
+                      </motion.button>
+                      <motion.button
+                        whileHover={{ scale: 1.05 }}
+                        whileTap={{ scale: 0.95 }}
+                        onClick={() => markManually(student.id, 'absent')}
+                        className={`p-1.5 rounded-lg transition-colors ${
+                          student.status === 'absent'
+                            ? 'bg-danger-500 text-white'
+                            : 'bg-danger-100 dark:bg-danger-900/30 text-danger-600 dark:text-danger-400 hover:bg-danger-200 dark:hover:bg-danger-900/50'
+                        }`}
+                        title="Mark Absent"
+                      >
+                        <XCircle className="w-4 h-4" />
+                      </motion.button>
+                      <Button
+                        size="sm"
+                        variant={student.status === 'pending' ? 'secondary' : 'ghost'}
+                        className="!px-2 !py-1 text-xs"
+                        onClick={() => markManually(student.id, 'pending')}
+                        title="Mark Pending"
+                      >
+                        Pending
+                      </Button>
                     </div>
                   </div>
                 </motion.div>
@@ -1243,25 +1699,16 @@ const TeacherAttendance = () => {
             disabled={isCreatingClass}
           />
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <Input
-              label="Semester"
-              type="number"
-              min="1"
-              max="12"
-              placeholder="e.g. 1"
-              value={newClassForm.semester}
-              onChange={(e) => setNewClassForm((prev) => ({ ...prev, semester: e.target.value }))}
-              disabled={isCreatingClass}
-            />
-            <Input
-              label="Academic Year"
-              placeholder="e.g. 2025-2026"
-              value={newClassForm.academicYear}
-              onChange={(e) => setNewClassForm((prev) => ({ ...prev, academicYear: e.target.value }))}
-              disabled={isCreatingClass}
-            />
-          </div>
+          <Input
+            label="Semester"
+            type="number"
+            min="1"
+            max="12"
+            placeholder="e.g. 1"
+            value={newClassForm.semester}
+            onChange={(e) => setNewClassForm((prev) => ({ ...prev, semester: e.target.value }))}
+            disabled={isCreatingClass}
+          />
 
           <Input
             label="Room"

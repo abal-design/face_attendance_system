@@ -10,7 +10,6 @@ import Table from '@/components/ui/Table';
 import Pagination from '@/components/ui/Pagination';
 import api from '@/utils/api';
 import { useToast } from '@/contexts/ToastContext';
-import { generatePassword, sendCredentialsEmail } from '@/utils/helpers';
 
 // Flatten nested API response into the flat shape the UI expects
 const normalizeStudent = (s) => ({
@@ -43,6 +42,7 @@ const AdminStudents = () => {
   const [viewStudent, setViewStudent] = useState(null);
   const [showCredentials, setShowCredentials] = useState(null);
   const [sendingEmail, setSendingEmail] = useState(false);
+  const [downloadingStudentId, setDownloadingStudentId] = useState(null);
   const fileInputRef = useRef(null);
   const toast = useToast();
 
@@ -143,27 +143,42 @@ const AdminStudents = () => {
         toast.error(err.response?.data?.message || 'Failed to update student');
       }
     } else {
-      const password = generatePassword();
       try {
         const res = await api.post('/students', {
           name: selectedStudent.name,
           email: selectedStudent.email,
-          password,
           phone: selectedStudent.phone,
           departmentId: selectedStudent.departmentId || null,
           year: selectedStudent.year || 1,
           address: selectedStudent.address,
         });
         const created = normalizeStudent(res.data.student);
+        const generatedCredentials = res.data.credentials;
         setStudents([created, ...students]);
         setShowModal(false);
         setSelectedStudent(null);
-        setShowCredentials({ name: created.name, email: created.email, userId: created.studentId, password });
-        setSendingEmail(true);
-        sendCredentialsEmail(created.email, created.studentId, password, 'student').then(() => {
+
+        if (generatedCredentials?.studentId && generatedCredentials?.password) {
+          setShowCredentials({
+            name: generatedCredentials.name || created.name,
+            email: generatedCredentials.email || created.email,
+            userId: generatedCredentials.studentId,
+            password: generatedCredentials.password,
+          });
+
+          const delivery = res.data.emailDelivery;
+          if (delivery?.attempted) {
+            if (delivery.sent) {
+              toast.success(`Credentials sent to ${generatedCredentials.email || created.email}`);
+            } else {
+              toast.warning(`Account created, but email sending failed: ${delivery.error || 'Unknown error'}`);
+            }
+          } else {
+            toast.info('Account created. Email sending is not configured in server env.');
+          }
+
           setSendingEmail(false);
-          toast.success(`Credentials sent to ${created.email}`);
-        });
+        }
       } catch (err) {
         toast.error(err.response?.data?.message || 'Failed to create student');
       }
@@ -249,10 +264,81 @@ const AdminStudents = () => {
       return;
     }
     
-    setStudents([...newStudents, ...students]);
-    toast.success(`${newStudents.length} students added successfully`);
-    setShowImportModal(false);
-    setImportedStudents([]);
+    const resolveDepartmentId = (departmentText = '') => {
+      const normalized = String(departmentText).trim().toLowerCase();
+      if (!normalized) return null;
+
+      const matchByCode = departments.find((d) => String(d.code || '').trim().toLowerCase() === normalized);
+      if (matchByCode) return matchByCode.id;
+
+      const matchByName = departments.find((d) => String(d.name || '').trim().toLowerCase() === normalized);
+      return matchByName?.id || null;
+    };
+
+    const payload = newStudents.map((student) => ({
+      name: student.name,
+      email: student.email,
+      departmentId: resolveDepartmentId(student.department),
+      year: Number(student.year) || 1,
+      phone: student.phone || null,
+      address: student.address || null,
+    }));
+
+    const downloadCredentialsCsv = (credentials) => {
+      if (!credentials?.length) return;
+
+      const header = 'Name,Email,Student ID,Password';
+      const rows = credentials.map((item) => (
+        [item.name, item.email, item.studentId, item.password]
+          .map((value) => `"${String(value || '').replace(/"/g, '""')}"`)
+          .join(',')
+      ));
+
+      const csvContent = [header, ...rows].join('\n');
+      const blob = new Blob([csvContent], { type: 'text/csv' });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `student_credentials_${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+    };
+
+    api.post('/students/bulk', { students: payload })
+      .then(async (res) => {
+        const createdStudents = (res.data.students || []).map(normalizeStudent);
+        const credentials = res.data.credentials || [];
+        const skipped = res.data.skipped || [];
+
+        setStudents((prev) => [...createdStudents, ...prev]);
+        downloadCredentialsCsv(credentials);
+
+        if (credentials.length > 0) {
+          const delivery = res.data.emailDelivery;
+          if (delivery?.attempted) {
+            toast.success(`${createdStudents.length} students created. Credentials emailed to ${delivery.sent || 0} students.`);
+            if (delivery.failed > 0) {
+              toast.warning(`${delivery.failed} credential emails failed to send.`);
+            }
+          } else {
+            toast.info(`${createdStudents.length} students created. Email sending is not configured in server env.`);
+          }
+        } else {
+          toast.success(`${createdStudents.length} students created successfully`);
+        }
+
+        if (skipped.length > 0) {
+          toast.info(`${skipped.length} rows were skipped (duplicate or invalid data).`);
+        }
+
+        setShowImportModal(false);
+        setImportedStudents([]);
+      })
+      .catch((err) => {
+        toast.error(err.response?.data?.message || 'Failed to bulk create students');
+      });
   };
 
   const downloadSampleCSV = () => {
@@ -267,6 +353,54 @@ const AdminStudents = () => {
     document.body.removeChild(a);
     window.URL.revokeObjectURL(url);
     toast.success('Sample CSV downloaded');
+  };
+
+  const handleDownloadStudentAttendance = async (student) => {
+    if (!student?.id) return;
+
+    setDownloadingStudentId(student.id);
+    try {
+      const response = await api.get('/attendance', {
+        params: { studentId: student.id },
+      });
+
+      const records = response.data.attendance || [];
+      const header = 'Date,Class,Status,Marked By,Marked At';
+      const rows = records.map((record) => (
+        [
+          record.attendanceDate || '',
+          record.class?.name || record.class?.code || '',
+          record.status || '',
+          record.markedBy || '',
+          record.markedAt ? new Date(record.markedAt).toISOString() : '',
+        ]
+          .map((value) => `"${String(value).replace(/"/g, '""')}"`)
+          .join(',')
+      ));
+
+      const csvContent = [header, ...rows].join('\n');
+      const blob = new Blob([csvContent], { type: 'text/csv' });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const safeStudentId = String(student.studentId || student.id).replace(/[^a-zA-Z0-9_-]/g, '_');
+      const safeName = String(student.name || 'student').replace(/[^a-zA-Z0-9_-]/g, '_');
+      a.href = url;
+      a.download = `${safeStudentId}_${safeName}_attendance.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+
+      if (records.length === 0) {
+        toast.info(`No attendance records found for ${student.name}. Empty CSV downloaded.`);
+      } else {
+        toast.success(`Attendance downloaded for ${student.name}`);
+      }
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Failed to download student attendance');
+    } finally {
+      setDownloadingStudentId(null);
+    }
   };
 
   const columns = [
@@ -416,6 +550,14 @@ const AdminStudents = () => {
                 </td>
                 <td className="px-6 py-4">
                   <div className="flex gap-1">
+                    <button
+                      onClick={() => handleDownloadStudentAttendance(student)}
+                      className="p-1.5 hover:bg-success-50 dark:hover:bg-success-900/20 rounded-lg transition-colors disabled:opacity-50"
+                      title="Download Attendance"
+                      disabled={downloadingStudentId === student.id}
+                    >
+                      <Download className="w-4 h-4 text-success-600" />
+                    </button>
                     <button
                       onClick={() => setViewStudent(student)}
                       className="p-1.5 hover:bg-primary-50 dark:hover:bg-primary-900/20 rounded-lg transition-colors"

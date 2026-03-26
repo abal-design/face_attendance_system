@@ -55,6 +55,14 @@ const Toast = ({ id, message, type, onClose }) => {
 export const ToastProvider = ({ children }) => {
   const [toasts, setToasts] = useState([]);
 
+  const removeToast = useCallback((id) => {
+    setToasts(prev => prev.filter(toast => toast.id !== id));
+  }, []);
+
+  const clearAllToasts = useCallback(() => {
+    setToasts([]);
+  }, []);
+
   const addToast = useCallback((message, type = 'info', duration = 4000) => {
     const id = Date.now();
     setToasts(prev => [...prev, { id, message, type }]);
@@ -66,11 +74,7 @@ export const ToastProvider = ({ children }) => {
     }
 
     return id;
-  }, []);
-
-  const removeToast = useCallback((id) => {
-    setToasts(prev => prev.filter(toast => toast.id !== id));
-  }, []);
+  }, [removeToast]);
 
   const success = useCallback((message, duration) => addToast(message, 'success', duration), [addToast]);
   const error = useCallback((message, duration) => addToast(message, 'error', duration), [addToast]);
@@ -80,6 +84,7 @@ export const ToastProvider = ({ children }) => {
   const value = {
     addToast,
     removeToast,
+    clearAllToasts,
     success,
     error,
     warning,
@@ -90,6 +95,16 @@ export const ToastProvider = ({ children }) => {
     <ToastContext.Provider value={value}>
       {children}
       <div className="fixed top-4 right-4 z-50 flex flex-col gap-2">
+        {toasts.length > 1 && (
+          <div className="flex justify-end">
+            <button
+              onClick={clearAllToasts}
+              className="text-xs font-medium px-3 py-1.5 rounded-md border border-slate-300 dark:border-slate-700 bg-white/90 dark:bg-slate-900/90 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+            >
+              Clear All
+            </button>
+          </div>
+        )}
         <AnimatePresence>
           {toasts.map(toast => (
             <Toast key={toast.id} {...toast} onClose={removeToast} />

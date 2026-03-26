@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion';
-import { useState, useEffect } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Users,
   GraduationCap,
@@ -12,12 +12,10 @@ import {
   CheckCircle2,
   UserPlus,
   FileText,
-  ArrowUpRight,
 } from 'lucide-react';
 import api from '@/utils/api';
 import Card, { CardBody, CardHeader } from '@/components/ui/Card';
 import StatCard from '@/components/dashboard/StatCard';
-import Badge from '@/components/ui/Badge';
 import {
   AreaChart,
   Area,
@@ -31,43 +29,184 @@ import {
   Cell,
 } from 'recharts';
 
-const monthlyData = [
-  { month: 'Jan', students: 450, teachers: 45, attendance: 85 },
-  { month: 'Feb', students: 468, teachers: 47, attendance: 87 },
-  { month: 'Mar', students: 492, teachers: 48, attendance: 89 },
-  { month: 'Apr', students: 510, teachers: 50, attendance: 91 },
-  { month: 'May', students: 528, teachers: 52, attendance: 88 },
-  { month: 'Jun', students: 545, teachers: 53, attendance: 92 },
-];
+const DEPT_COLORS = ['#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#14b8a6', '#8b5cf6'];
 
-const departmentData = [
-  { name: 'Computer Science', value: 250, color: '#3b82f6' },
-  { name: 'Engineering', value: 180, color: '#22c55e' },
-  { name: 'Business', value: 120, color: '#f59e0b' },
-  { name: 'Arts', value: 95, color: '#ef4444' },
-];
+const relativeTime = (dateValue) => {
+  const date = new Date(dateValue);
+  if (Number.isNaN(date.getTime())) return 'just now';
 
-const recentActivities = [
-  { id: 1, action: 'New student registered', user: 'John Doe', time: '5 min ago', type: 'info', icon: UserPlus },
-  { id: 2, action: 'Attendance marked', user: 'Prof. Smith', time: '12 min ago', type: 'success', icon: CheckCircle2 },
-  { id: 3, action: 'Report generated', user: 'Admin', time: '1 hour ago', type: 'info', icon: FileText },
-  { id: 4, action: 'Low attendance alert', user: 'System', time: '2 hours ago', type: 'warning', icon: AlertCircle },
-  { id: 5, action: 'New teacher added', user: 'Dr. Williams', time: '3 hours ago', type: 'success', icon: GraduationCap },
-];
+  const diffMs = Date.now() - date.getTime();
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins} min ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? '' : 's'} ago`;
+};
 
 const AdminDashboard = () => {
+  const [loadingData, setLoadingData] = useState(true);
   const [stats, setStats] = useState({ students: 0, teachers: 0, departments: 0, classes: 0, attendanceToday: 0 });
+  const [students, setStudents] = useState([]);
+  const [teachers, setTeachers] = useState([]);
+  const [attendanceRecords, setAttendanceRecords] = useState([]);
 
   useEffect(() => {
-    api.get('/dashboard').then(res => {
-      setStats(res.data.stats || {});
-    }).catch(() => {});
+    let mounted = true;
+
+    const loadDashboardData = async () => {
+      try {
+        const [statsRes, studentsRes, teachersRes, attendanceRes] = await Promise.all([
+          api.get('/dashboard/stats'),
+          api.get('/students'),
+          api.get('/teachers'),
+          api.get('/attendance'),
+        ]);
+
+        if (!mounted) return;
+
+        setStats(statsRes.data.stats || {});
+        setStudents(studentsRes.data.students || []);
+        setTeachers(teachersRes.data.teachers || []);
+        setAttendanceRecords(attendanceRes.data.attendance || []);
+      } catch {
+        if (!mounted) return;
+        setStudents([]);
+        setTeachers([]);
+        setAttendanceRecords([]);
+      } finally {
+        if (mounted) {
+          setLoadingData(false);
+        }
+      }
+    };
+
+    loadDashboardData();
+    const intervalId = setInterval(loadDashboardData, 20000);
+
+    return () => {
+      mounted = false;
+      clearInterval(intervalId);
+    };
   }, []);
 
   const totalStudents = stats.students;
   const totalTeachers = stats.teachers;
   const totalDepartments = stats.departments;
-  const avgAttendance = 91.2;
+  const avgAttendance = attendanceRecords.length
+    ? Math.round((attendanceRecords.filter((record) => record.status === 'present').length / attendanceRecords.length) * 1000) / 10
+    : 0;
+
+  const monthlyData = useMemo(() => {
+    const now = new Date();
+    const buckets = [];
+
+    for (let i = 5; i >= 0; i -= 1) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      buckets.push({
+        key,
+        month: d.toLocaleString('en-US', { month: 'short' }),
+        students: 0,
+        teachers: 0,
+        present: 0,
+        totalAttendance: 0,
+      });
+    }
+
+    const byKey = new Map(buckets.map((item) => [item.key, item]));
+
+    students.forEach((student) => {
+      const d = new Date(student.createdAt);
+      if (Number.isNaN(d.getTime())) return;
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      const bucket = byKey.get(key);
+      if (bucket) bucket.students += 1;
+    });
+
+    teachers.forEach((teacher) => {
+      const d = new Date(teacher.createdAt);
+      if (Number.isNaN(d.getTime())) return;
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      const bucket = byKey.get(key);
+      if (bucket) bucket.teachers += 1;
+    });
+
+    attendanceRecords.forEach((record) => {
+      const d = new Date(record.attendanceDate);
+      if (Number.isNaN(d.getTime())) return;
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      const bucket = byKey.get(key);
+      if (!bucket) return;
+      bucket.totalAttendance += 1;
+      if (record.status === 'present') bucket.present += 1;
+    });
+
+    let runningStudents = 0;
+    let runningTeachers = 0;
+
+    return buckets.map((item) => {
+      runningStudents += item.students;
+      runningTeachers += item.teachers;
+      return {
+        month: item.month,
+        students: runningStudents,
+        teachers: runningTeachers,
+        attendance: item.totalAttendance ? Math.round((item.present / item.totalAttendance) * 100) : 0,
+      };
+    });
+  }, [attendanceRecords, students, teachers]);
+
+  const departmentData = useMemo(() => {
+    const counts = new Map();
+    students.forEach((student) => {
+      const name = student.department?.name || 'Unassigned';
+      counts.set(name, (counts.get(name) || 0) + 1);
+    });
+
+    return Array.from(counts.entries())
+      .map(([name, value], index) => ({ name, value, color: DEPT_COLORS[index % DEPT_COLORS.length] }))
+      .sort((a, b) => b.value - a.value);
+  }, [students]);
+
+  const recentActivities = useMemo(() => {
+    const items = [
+      ...students.slice(0, 3).map((student) => ({
+        id: `student-${student.id}`,
+        action: 'New student registered',
+        user: student.user?.name || student.studentId || 'Student',
+        time: relativeTime(student.createdAt),
+        type: 'info',
+        icon: UserPlus,
+        date: new Date(student.createdAt).getTime() || 0,
+      })),
+      ...teachers.slice(0, 2).map((teacher) => ({
+        id: `teacher-${teacher.id}`,
+        action: 'New teacher added',
+        user: teacher.user?.name || teacher.teacherId || 'Teacher',
+        time: relativeTime(teacher.createdAt),
+        type: 'success',
+        icon: GraduationCap,
+        date: new Date(teacher.createdAt).getTime() || 0,
+      })),
+      ...attendanceRecords.slice(0, 2).map((record) => ({
+        id: `attendance-${record.id}`,
+        action: 'Attendance marked',
+        user: record.markedBy || 'System',
+        time: relativeTime(record.markedAt || record.createdAt),
+        type: record.status === 'present' ? 'success' : 'warning',
+        icon: record.status === 'present' ? CheckCircle2 : AlertCircle,
+        date: new Date(record.markedAt || record.createdAt).getTime() || 0,
+      })),
+    ];
+
+    return items.sort((a, b) => b.date - a.date).slice(0, 6);
+  }, [attendanceRecords, students, teachers]);
+
+  if (loadingData) {
+    return <div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-10 w-10 border-t-2 border-primary-500" /></div>;
+  }
 
   return (
     <div className="space-y-6">
@@ -80,7 +219,7 @@ const AdminDashboard = () => {
           Admin Dashboard 
         </h1>
         <p className="text-slate-600 dark:text-slate-400">
-          System overview and analytics
+          System overview and analytics from live database data
         </p>
       </motion.div>
 
@@ -126,7 +265,7 @@ const AdminDashboard = () => {
               Growth & Attendance Trends
             </h2>
             <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
-              6-month overview of system growth
+              6-month overview based on database records
             </p>
           </CardHeader>
           <CardBody>
@@ -294,7 +433,7 @@ const AdminDashboard = () => {
                 <Calendar className="w-5 h-5 text-primary-600 dark:text-primary-400" />
               </div>
               <p className="text-2xl font-bold text-primary-900 dark:text-primary-300">
-                42 Sessions
+                {stats.attendanceToday || 0} Sessions
               </p>
               <p className="text-xs text-primary-600 dark:text-primary-500 mt-1">
                 Across all departments
@@ -309,19 +448,19 @@ const AdminDashboard = () => {
                 <Award className="w-5 h-5 text-success-600 dark:text-success-400" />
               </div>
               <p className="text-2xl font-bold text-success-900 dark:text-success-300">
-                Excellent
+                {avgAttendance >= 90 ? 'Excellent' : avgAttendance >= 75 ? 'Good' : 'Needs Attention'}
               </p>
               <div className="mt-2">
                 <div className="h-2 bg-success-200 dark:bg-success-900/30 rounded-full overflow-hidden">
                   <motion.div
                     initial={{ width: 0 }}
-                    animate={{ width: '94%' }}
+                    animate={{ width: `${Math.min(100, Math.max(0, avgAttendance))}%` }}
                     transition={{ duration: 1, ease: 'easeOut' }}
                     className="h-full bg-success-600"
                   />
                 </div>
                 <p className="text-xs text-success-600 dark:text-success-500 mt-1">
-                  94% uptime
+                  {avgAttendance}% attendance quality
                 </p>
               </div>
             </div>
@@ -334,7 +473,7 @@ const AdminDashboard = () => {
                 <AlertCircle className="w-5 h-5 text-warning-600 dark:text-warning-400" />
               </div>
               <p className="text-2xl font-bold text-warning-900 dark:text-warning-300">
-                7 Items
+                {Math.max(0, stats.students - (stats.attendanceToday || 0))} Items
               </p>
               <p className="text-xs text-warning-600 dark:text-warning-500 mt-1">
                 Require your attention

@@ -32,6 +32,10 @@ const defineStudent = (sequelize) => {
         type: DataTypes.INTEGER.UNSIGNED,
         allowNull: true,
       },
+      section: {
+        type: DataTypes.STRING(40),
+        allowNull: true,
+      },
       phone: {
         type: DataTypes.STRING(30),
         allowNull: true,
@@ -46,6 +50,14 @@ const defineStudent = (sequelize) => {
       },
       guardianPhone: {
         type: DataTypes.STRING(30),
+        allowNull: true,
+      },
+      faceDescriptor: {
+        type: DataTypes.TEXT,
+        allowNull: true,
+      },
+      faceSamples: {
+        type: DataTypes.TEXT('long'),
         allowNull: true,
       },
       attendancePercentage: {

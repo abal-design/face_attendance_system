@@ -6,6 +6,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/contexts/ToastContext';
 import Input from '@/components/ui/Input';
 import Button from '@/components/ui/Button';
+import sypLogo from '@/Image/syp logo.png';
 
 const Login = () => {
   const [email, setEmail] = useState('');
@@ -53,7 +54,7 @@ const Login = () => {
   };
 
   const features = [
-    { icon: <Camera className="w-5 h-5" />, text: 'AI Face Recognition' },
+    { icon: <Camera className="w-5 h-5" />, text: 'Real time camera feed' },
     { icon: <Sparkles className="w-5 h-5" />, text: 'Real-time Tracking' },
     { icon: <Shield className="w-5 h-5" />, text: 'Secure & Private' },
   ];
@@ -89,7 +90,8 @@ const Login = () => {
           >
             <div className="flex items-center gap-3 mb-8">
               <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center shadow-xl shadow-primary-500/30">
-                <Camera className="w-7 h-7 text-white" />
+                <img src={sypLogo} alt="SYP Logo" className="w-14 h-14 rounded-2xl" />
+
               </div>
               <div>
                 <h1 className="text-2xl font-display font-bold text-slate-900 dark:text-white">FaceAttend</h1>
@@ -105,7 +107,7 @@ const Login = () => {
             </h2>
 
             <p className="text-lg text-slate-600 dark:text-slate-400 mb-10 leading-relaxed">
-              Streamline your attendance workflow with AI-powered face recognition. Fast, accurate, and completely hands-free.
+              Streamline your attendance workflow with face recognition. Fast, accurate, and completely hands-free.
             </p>
 
             <div className="space-y-4">
@@ -246,7 +248,7 @@ const Login = () => {
 
           {/* Footer */}
           <p className="mt-8 text-center text-xs text-slate-400 dark:text-slate-600">
-            © {new Date().getFullYear()} FaceAttend. All rights reserved.
+            © {new Date().getFullYear()} AbalBohara. All rights reserved.
           </p>
         </motion.div>
       </div>

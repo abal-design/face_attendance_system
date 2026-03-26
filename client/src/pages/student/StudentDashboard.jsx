@@ -1,3 +1,4 @@
+import { useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import {
   Calendar,
@@ -11,31 +12,129 @@ import Card, { CardBody, CardHeader } from '@/components/ui/Card';
 import StatCard from '@/components/dashboard/StatCard';
 import Progress from '@/components/ui/Progress';
 import Badge from '@/components/ui/Badge';
-import { LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import api from '@/utils/api';
+import { useAuth } from '@/contexts/AuthContext';
 
-// Mock data
-const attendanceData = [
-  { month: 'Jan', attendance: 85 },
-  { month: 'Feb', attendance: 88 },
-  { month: 'Mar', attendance: 92 },
-  { month: 'Apr', attendance: 87 },
-  { month: 'May', attendance: 90 },
-  { month: 'Jun', attendance: 94 },
-];
+const formatDateOnly = (dateText) => {
+  if (!dateText) return '-';
+  const date = new Date(dateText);
+  if (Number.isNaN(date.getTime())) return String(dateText);
+  return date.toLocaleDateString();
+};
 
-const recentClasses = [
-  { id: 1, subject: 'Computer Science', date: '2024-03-11', time: '09:00 AM', status: 'present', teacher: 'Dr. Smith' },
-  { id: 2, subject: 'Mathematics', date: '2024-03-11', time: '11:00 AM', status: 'present', teacher: 'Prof. Johnson' },
-  { id: 3, subject: 'Physics', date: '2024-03-10', time: '02:00 PM', status: 'present', teacher: 'Dr. Williams' },
-  { id: 4, subject: 'Chemistry', date: '2024-03-10', time: '10:00 AM', status: 'absent', teacher: 'Prof. Brown' },
-  { id: 5, subject: 'English', date: '2024-03-09', time: '01:00 PM', status: 'present', teacher: 'Ms. Davis' },
-];
+const formatTimeOnly = (dateText) => {
+  if (!dateText) return '-';
+  const date = new Date(dateText);
+  if (Number.isNaN(date.getTime())) return '-';
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+};
 
 const StudentDashboard = () => {
-  const attendancePercentage = 92;
-  const totalClasses = 120;
-  const attendedClasses = 110;
-  const absentClasses = 10;
+  const { user } = useAuth();
+  const [loadingData, setLoadingData] = useState(true);
+  const [studentProfile, setStudentProfile] = useState(null);
+  const [attendanceRecords, setAttendanceRecords] = useState([]);
+
+  useEffect(() => {
+    let mounted = true;
+
+    const loadStudentData = async () => {
+      try {
+        const meRes = await api.get('/auth/me');
+        const currentUserId = meRes.data.user?.id;
+
+        const studentsRes = await api.get('/students');
+        const students = studentsRes.data.students || [];
+        const student = students.find((entry) => entry.user?.id === currentUserId) || null;
+
+        if (!mounted) return;
+        setStudentProfile(student);
+
+        if (student?.id) {
+          const attendanceRes = await api.get('/attendance', {
+            params: { studentId: student.id },
+          });
+
+          if (!mounted) return;
+          setAttendanceRecords(attendanceRes.data.attendance || []);
+        } else {
+          setAttendanceRecords([]);
+        }
+      } catch {
+        if (!mounted) return;
+        setAttendanceRecords([]);
+      } finally {
+        if (mounted) {
+          setLoadingData(false);
+        }
+      }
+    };
+
+    loadStudentData();
+    const intervalId = setInterval(loadStudentData, 20000);
+
+    return () => {
+      mounted = false;
+      clearInterval(intervalId);
+    };
+  }, []);
+
+  const recentClasses = useMemo(
+    () =>
+      attendanceRecords.slice(0, 5).map((record) => ({
+        id: record.id,
+        subject: record.class?.name || record.class?.code || 'Class',
+        date: formatDateOnly(record.attendanceDate),
+        time: formatTimeOnly(record.markedAt),
+        status: String(record.status || 'absent').toLowerCase(),
+        teacher: record.markedBy || 'System',
+      })),
+    [attendanceRecords]
+  );
+
+  const totalClasses = attendanceRecords.length;
+  const attendedClasses = attendanceRecords.filter((record) => record.status === 'present').length;
+  const absentClasses = attendanceRecords.filter((record) => record.status === 'absent').length;
+  const attendancePercentage = totalClasses > 0 ? Math.round((attendedClasses / totalClasses) * 100) : 0;
+
+  const attendanceData = useMemo(() => {
+    const now = new Date();
+    const buckets = [];
+
+    for (let i = 5; i >= 0; i -= 1) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      buckets.push({
+        key,
+        month: d.toLocaleString('en-US', { month: 'short' }),
+        present: 0,
+        total: 0,
+      });
+    }
+
+    const byKey = new Map(buckets.map((item) => [item.key, item]));
+
+    attendanceRecords.forEach((record) => {
+      const d = new Date(record.attendanceDate);
+      if (Number.isNaN(d.getTime())) return;
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      const bucket = byKey.get(key);
+      if (!bucket) return;
+
+      bucket.total += 1;
+      if (record.status === 'present') bucket.present += 1;
+    });
+
+    return buckets.map((item) => ({
+      month: item.month,
+      attendance: item.total > 0 ? Math.round((item.present / item.total) * 100) : 0,
+    }));
+  }, [attendanceRecords]);
+
+  if (loadingData) {
+    return <div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-10 w-10 border-t-2 border-primary-500" /></div>;
+  }
 
   return (
     <div className="space-y-6">
@@ -45,10 +144,10 @@ const StudentDashboard = () => {
         animate={{ opacity: 1, y: 0 }}
       >
         <h1 className="text-3xl font-display font-bold text-slate-900 dark:text-slate-100 mb-2">
-          Welcome back, Student! 👋
+          Welcome back, {user?.name || 'Student'}! 👋
         </h1>
         <p className="text-slate-600 dark:text-slate-400">
-          Here's your attendance overview and recent activity.
+          Department: {studentProfile?.department?.name || 'Not assigned'} • Live attendance synced from database.
         </p>
       </motion.div>
 
@@ -57,8 +156,6 @@ const StudentDashboard = () => {
         <StatCard
           title="Overall Attendance"
           value={`${attendancePercentage}%`}
-          change={3.5}
-          trend="up"
           icon={TrendingUp}
           color="success"
         />
@@ -77,8 +174,6 @@ const StudentDashboard = () => {
         <StatCard
           title="Absent Days"
           value={absentClasses}
-          change={2.1}
-          trend="down"
           icon={XCircle}
           color="danger"
         />
@@ -91,9 +186,7 @@ const StudentDashboard = () => {
             <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
               Attendance Trend
             </h2>
-            <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
-              Your attendance percentage over the past 6 months
-            </p>
+            <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">Last 6 months from database records</p>
           </CardHeader>
           <CardBody>
             <ResponsiveContainer width="100%" height={300}>
@@ -275,6 +368,13 @@ const StudentDashboard = () => {
                     </td>
                   </motion.tr>
                 ))}
+                {recentClasses.length === 0 && (
+                  <tr>
+                    <td className="px-6 py-8 text-sm text-slate-500 dark:text-slate-400" colSpan={4}>
+                      No attendance records found yet.
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>

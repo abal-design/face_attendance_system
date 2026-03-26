@@ -12,10 +12,10 @@ import {
   ChevronRight,
   GraduationCap,
   Camera,
-  BarChart3,
   Clock,
   UserCircle,
   Building2,
+  Layers,
 } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { cn } from '@/utils/helpers';
@@ -29,11 +29,9 @@ const Sidebar = ({ isOpen, setIsOpen }) => {
         return [
           { icon: LayoutDashboard, label: 'Dashboard', path: '/admin/dashboard' },
           { icon: Users, label: 'Students', path: '/admin/students' },
+          { icon: Layers, label: 'Student Sections', path: '/admin/student-sections' },
           { icon: GraduationCap, label: 'Teachers', path: '/admin/teachers' },
           { icon: Building2, label: 'Departments', path: '/admin/departments' },
-
-          { icon: BarChart3, label: 'Analytics', path: '/admin/analytics' },
-          { icon: Calendar, label: 'Attendance', path: '/admin/attendance' },
           { icon: FileText, label: 'Reports', path: '/admin/reports' },
         ];
       case 'teacher':

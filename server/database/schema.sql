@@ -87,10 +87,13 @@ CREATE TABLE IF NOT EXISTS `students` (
   `department_id`         INT UNSIGNED              NULL,
   `year`                  INT UNSIGNED              NOT NULL DEFAULT 1,
   `semester`              INT UNSIGNED              NULL,
+  `section`               VARCHAR(40)               NULL,
   `phone`                 VARCHAR(30)               NULL,
   `address`               VARCHAR(255)              NULL,
   `guardian_name`         VARCHAR(120)              NULL,
   `guardian_phone`        VARCHAR(30)               NULL,
+  `face_descriptor`       TEXT                      NULL,
+  `face_samples`          LONGTEXT                  NULL,
   `attendance_percentage` DECIMAL(5,2)              NOT NULL DEFAULT 0.00,
   `status`                ENUM('active','inactive') NOT NULL DEFAULT 'active',
   `created_at`            DATETIME                  NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -101,6 +104,15 @@ CREATE TABLE IF NOT EXISTS `students` (
   CONSTRAINT `fk_students_user`       FOREIGN KEY (`user_id`)       REFERENCES `users`       (`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_students_department` FOREIGN KEY (`department_id`) REFERENCES `departments` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+ALTER TABLE `students`
+  ADD COLUMN `face_descriptor` TEXT NULL;
+
+ALTER TABLE `students`
+  ADD COLUMN `face_samples` LONGTEXT NULL;
+
+ALTER TABLE `students`
+  ADD COLUMN `section` VARCHAR(40) NULL;
 
 -- ============================================================
 -- 5. classes
